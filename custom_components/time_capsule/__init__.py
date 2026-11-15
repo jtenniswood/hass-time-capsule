@@ -8,6 +8,7 @@ from dataclasses import replace
 from datetime import datetime
 from functools import partial
 
+from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
@@ -15,10 +16,12 @@ from homeassistant.const import (
     CONF_PORT,
     CONF_USERNAME,
     Platform,
+    UnitOfTime,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import utcnow
 
@@ -37,6 +40,9 @@ from .const import (
     CONF_SSH_FINGERPRINT,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
+    SMART_HEALTH_IDS,
+    SMART_POWER_ON_HOURS_ID,
+    SMART_TEMPERATURE_ID,
 )
 from .smb import probe_smb
 from .smart import SmartStatus
@@ -149,15 +155,52 @@ def _async_register_device(
     )
 
 
+def _async_migrate_health_sensors(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove retired readings and update the default unit on the existing runtime sensor."""
+    registry = er.async_get(hass)
+    prefix = f"{DOMAIN}_{entry.data[CONF_ENTITY_KEY]}_"
+    temperature_key = f"smart_{SMART_TEMPERATURE_ID}"
+    retained_smart_keys = {f"smart_{attr_id}" for attr_id in SMART_HEALTH_IDS}
+    for entity in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if entity.platform != DOMAIN or not entity.unique_id.startswith(prefix):
+            continue
+        key = entity.unique_id.removeprefix(prefix)
+        if entity.domain == "binary_sensor" and key == "ssh_connected":
+            registry.async_remove(entity.entity_id)
+        if entity.domain != "sensor" or key == temperature_key:
+            continue
+        if (
+            entity.original_device_class == SensorDeviceClass.TEMPERATURE
+            or (
+                key.startswith("smart_")
+                and key.removeprefix("smart_").isdigit()
+                and key not in retained_smart_keys
+            )
+        ):
+            registry.async_remove(entity.entity_id)
+        elif (
+            key == f"smart_{SMART_POWER_ON_HOURS_ID}"
+            and entity.unit_of_measurement == UnitOfTime.HOURS
+        ):
+            registry.async_update_entity(
+                entity.entity_id, unit_of_measurement=UnitOfTime.DAYS
+            )
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Freeze the identity used by existing devices, automations and history."""
+    """Preserve retained entity IDs when updating the config and sensor list."""
     if entry.version == 1:
         hass.config_entries.async_update_entry(
             entry,
             version=2,
             data={**entry.data, CONF_ENTITY_KEY: entry.data[CONF_HOST]},
         )
-    return entry.version == 2
+    if entry.version != 2:
+        return False
+    if entry.minor_version < 2:
+        _async_migrate_health_sensors(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+    return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

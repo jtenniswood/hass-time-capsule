@@ -16,7 +16,9 @@ blueprint:
             - domain: input_text
     connectivity:
       name: Connection and mount sensors
-      description: Select any SSH, backup volume, SMB port, or SMB share sensors to monitor.
+      description: >-
+        Select Backup Volume Mounted or the optional SMB sensors. A selected
+        sensor that is off or unavailable can trigger an outage alert.
       default: []
       selector:
         entity:
@@ -202,7 +204,7 @@ actions:
         {% set reporter = states(reporter_entity) if reporter_entity else '' %}
         {{
           [
-            ('c', true if 'off' in links else (false if links | reject('eq', 'on') | list | length == 0 else none), connection_delay_minutes * 60),
+            ('c', true if 'off' in links or 'unavailable' in links else (false if links | reject('eq', 'on') | list | length == 0 else none), connection_delay_minutes * 60),
             ('s', smart == 'Failed' if smart in ['', 'Passed', 'Failed'] else none, 0),
             ('u', smart == 'Unknown' if smart not in ['unknown', 'unavailable'] else none, connection_delay_minutes * 60),
             ('p', pending > 0 if pending is not none else (false if not pending_entity else none), 0),

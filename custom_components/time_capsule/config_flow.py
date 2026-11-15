@@ -92,6 +92,7 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure a Time Capsule and verify its identity before reusing a password."""
 
     VERSION = 2
+    MINOR_VERSION = 2
     _discovery: ZeroconfServiceInfo | None = None
     _mac: str | None = None
 

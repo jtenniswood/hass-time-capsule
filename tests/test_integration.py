@@ -17,7 +17,7 @@ except ModuleNotFoundError as err:
     ) from err
 
 from homeassistant import loader
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntry, ConfigEntryDisabler, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -178,20 +178,32 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         await async_from_config_dict({"homeassistant": {}}, self.hass)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
 
-    async def async_add_legacy_entry(self):
+    async def async_add_legacy_entry(self, *, version=1, sensors=()):
         entry = ConfigEntry(
             domain=DOMAIN,
             title=f"Time Capsule ({CONNECTION['host']})",
-            data=CONNECTION,
+            data=(
+                CONNECTION if version == 1
+                else {**CONNECTION, CONF_ENTITY_KEY: CONNECTION["host"]}
+            ),
             options={},
             source="user",
-            version=1,
+            version=version,
             minor_version=1,
             unique_id=CONNECTION["host"],
             discovery_keys={},
             subentries_data=None,
+            disabled_by=ConfigEntryDisabler.USER if sensors else None,
         )
         await self.hass.config_entries.async_add(entry)
+        registry = er.async_get(self.hass)
+        for platform, suffix, attributes in sensors:
+            registry.async_get_or_create(
+                platform, DOMAIN, f"{DOMAIN}_{CONNECTION['host']}_{suffix}",
+                config_entry=entry, **attributes,
+            )
+        if sensors:
+            await self.hass.config_entries.async_set_disabled_by(entry.entry_id, None)
         await self.hass.async_block_till_done()
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
         return entry
@@ -245,17 +257,17 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         ) as fetch:
             entry = await self.async_add_legacy_entry()
             key = CONNECTION["host"]
-            connected = self.entity_id("binary_sensor", key, "ssh_connected")
+            mounted = self.entity_id("binary_sensor", key, "volume_mounted")
             last = self.entity_id("sensor", key, "last_reading")
             disk = self.entity_id("sensor", key, "disk_free")
-            self.assertEqual(self.hass.states.get(connected).state, "off")
+            self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
             registry = dr.async_get(self.hass)
             (device,) = dr.async_entries_for_config_entry(registry, entry.entry_id)
             registry.async_update_device(device.id, name_by_user="My Capsule")
 
             await entry.runtime_data.async_refresh()
             await self.hass.async_block_till_done()
-            self.assertEqual(self.hass.states.get(connected).state, "on")
+            self.assertEqual(self.hass.states.get(mounted).state, "off")
             self.assertTrue(fetch.call_args.kwargs["include_name"])
             self.assertEqual(entry.title, "Time Capsule Media")
             self.assertEqual(registry.async_get(device.id).name, entry.title)
@@ -273,9 +285,81 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             last_value = self.hass.states.get(last).state
             self.assertNotEqual(self.hass.states.get(disk).state, "unavailable")
             await entry.runtime_data.async_refresh()
-            self.assertEqual(self.hass.states.get(connected).state, "off")
+            self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
             self.assertEqual(self.hass.states.get(disk).state, "unavailable")
             self.assertEqual(self.hass.states.get(last).state, last_value)
+
+    async def test_sensor_upgrade_keeps_the_ten_health_readings(self):
+        key = CONNECTION["host"]
+        attributes = {
+            1: ("Raw read error rate", 120779000),
+            5: ("Reallocated sector count", 0),
+            9: ("Power-on hours count", 16363),
+            10: ("Spin retry count", 0),
+            12: ("Device power cycle count", 4236),
+            184: ("Unknown", 0),
+            187: ("Reported uncorrect", 0),
+            190: ("Airflow Temperature", 52),
+            194: ("Temperature", 49),
+            197: ("Current pending sector", 0),
+            198: ("Offline uncorrectable", 0),
+            199: ("Ultra DMA CRC error count", 0),
+        }
+
+        def smart_without(*excluded):
+            rows = [
+                f"{attr_id} 100 0 no online positive {label} {raw}"
+                for attr_id, (label, raw) in attributes.items()
+                if attr_id not in excluded
+            ]
+            return parse_smart_status("\n".join(["SMART supported, SMART enabled", *rows]))
+
+        full = replace(poll_result(), smart=smart_without())
+        legacy_sensors = (
+            ("binary_sensor", "ssh_connected", {}),
+            ("sensor", "smart_1", {}),
+            ("sensor", "smart_184", {}),
+            ("sensor", "smart_190", {"original_device_class": "temperature"}),
+            ("sensor", "tsensor0_T_internal", {"original_device_class": "temperature"}),
+            ("sensor", "smart_194", {"suggested_object_id": "my_drive_temp"}),
+            ("sensor", "smart_9", {
+                "suggested_object_id": "my_drive_runtime",
+                "original_device_class": "duration",
+                "unit_of_measurement": "h",
+            }),
+        )
+        with patch(
+            "custom_components.time_capsule.fetch_time_capsule_data",
+            side_effect=[
+                full,
+                replace(full, smart=smart_without(194)),
+                replace(full, smart=smart_without(190, 194)),
+            ],
+        ):
+            entry = await self.async_add_legacy_entry(version=2, sensors=legacy_sensors)
+            self.assertEqual(entry.minor_version, 2)
+            registry = er.async_get(self.hass)
+            entity_keys = {
+                entity.unique_id.removeprefix(f"{DOMAIN}_{key}_")
+                for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+            }
+            self.assertEqual(entity_keys, {
+                "smart_5", "smart_9", "smart_10", "smart_12", "smart_187",
+                "smart_194", "smart_197", "smart_198", "smart_199", "last_reading",
+                "smart_status", "volume_mounted", "disk_free", "disk_used",
+                "disk_total", "disk_percent", "disk_free_percent",
+            })
+
+            runtime = self.hass.states.get("sensor.my_drive_runtime")
+            self.assertEqual(runtime.attributes["unit_of_measurement"], "d")
+            self.assertAlmostEqual(float(runtime.state), 16363 / 24)
+
+            temperature = "sensor.my_drive_temp"
+            self.assertEqual(float(self.hass.states.get(temperature).state), 49)
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(float(self.hass.states.get(temperature).state), 52)
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(float(self.hass.states.get(temperature).state), 45.32)
 
     async def test_smb_and_mount_checks_and_diagnostics(self):
         with (
@@ -313,19 +397,15 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             probe.assert_called_with(CONNECTION["host"], "Backup Data", "smb-test-account", "smb-test-password")
             port = self.entity_id("binary_sensor", key, "smb_port_open")
             share = self.entity_id("binary_sensor", key, "smb_share_accessible")
-            ssh = self.entity_id("binary_sensor", key, "ssh_connected")
-            self.assertEqual(self.hass.states.get(ssh).state, "on")
             self.assertEqual(self.hass.states.get(mounted).state, "off")
             self.assertEqual(self.hass.states.get(port).state, "off")
             self.assertEqual(self.hass.states.get(share).state, "off")
 
             await entry.runtime_data.async_refresh()
-            self.assertEqual(self.hass.states.get(ssh).state, "off")
             self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
             self.assertEqual(self.hass.states.get(share).state, "on")
 
             await entry.runtime_data.async_refresh()
-            self.assertEqual(self.hass.states.get(ssh).state, "on")
             self.assertEqual(self.hass.states.get(mounted).state, "on")
 
             diagnostics = await async_get_config_entry_diagnostics(self.hass, entry)
