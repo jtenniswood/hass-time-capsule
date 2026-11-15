@@ -79,7 +79,8 @@ If setup reports a connection error, check the address, port, and whether
 SSH is enabled and reachable from Home Assistant. If it reports an
 authentication error, check the SSH username and base station admin password.
 If sensors become unavailable, check **Last Successful Reading** on the
-device page.
+device page. If Home Assistant asks you to sign in again after setup, see
+[Update a rejected SSH password](#update-a-rejected-ssh-password).
 
 ## Check the backup volume and share
 
@@ -97,12 +98,24 @@ and enable **Monitor the SMB service**.
   configured for SMB. To keep its password when editing the same share and
   username, leave the password field blank.
 
-The SMB checks keep running during an SSH outage or while Home Assistant
-waits for you to update the SSH password. SSH readings, including **Backup
-Volume Mounted**, are unavailable until SSH works again. A successful SMB
-share check shows that Home Assistant can open the share. Each Mac's backup
-reporter shows when that Mac last completed a backup to its configured
-destination.
+The SMB checks keep running during an SSH outage. **SMB Share Accessible**
+shows whether Home Assistant can open the share. The [Mac backup reporter](#monitor-completed-time-machine-backups)
+shows when that Mac last completed a backup.
+
+### Update a rejected SSH password
+
+If the Time Capsule rejects the saved SSH password, Home Assistant keeps
+running any enabled SMB checks, even after a restart. SSH readings such as
+**Backup Volume Mounted** remain unavailable until SSH reconnects.
+
+1. Go to **Settings → System → Repairs** and open the Apple Time Capsule
+   sign-in repair. Enter the SSH username and current base station admin
+   password. Home Assistant reloads the integration after it verifies the
+   credentials.
+2. On the Time Capsule device page, check that **Last Successful Reading**
+   updates. If **SMB Port Open** is on and **SMB Share Accessible** is off,
+   check the share name and SMB credentials under the integration's
+   **Configure** options. If the SMB password also changed, update it there.
 
 ## Set up alerts
 
