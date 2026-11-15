@@ -94,7 +94,7 @@ class _TimeCapsuleEntity(CoordinatorEntity[DataUpdateCoordinator[TimeCapsuleData
             identifiers={(DOMAIN, host)},
             name="Time Capsule",
             manufacturer="Apple",
-            model="Time Capsule (modded)",
+            model="Apple Time Capsule",
         )
 
 

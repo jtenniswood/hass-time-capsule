@@ -1,4 +1,4 @@
-# Time Capsule Sensors
+# Apple Time Capsule
 
 A Home Assistant integration for modded Apple Time Capsules. It polls the
 device once a minute and reports:
