@@ -10,7 +10,8 @@ device once a minute and reports:
   sectors, power-on hours, pending sectors, temperature, and so on.
 - An overall SMART Status sensor (`Passed` / `Failed` / `Disabled` /
   `Not Supported`).
-- Disk usage for the internal drive: total, used, free, and percent used.
+- Disk usage for the internal drive: total, used, free, percent used, and
+  percent free.
 
 It may also work with an AirPort Extreme, since it shares the same internal
 tooling, but that hasn't been tested -- if you try it, let me know via an
