@@ -228,6 +228,7 @@ class TimeCapsuleDiskSensor(TimeCapsuleEntity, SensorEntity):
         self._attr_name = DISK_METRIC_NAMES[metric]
 
         if metric in ("percent", "free_percent"):
+            self._attr_icon = "mdi:database"
             self._attr_native_unit_of_measurement = PERCENTAGE
         else:
             self._attr_device_class = SensorDeviceClass.DATA_SIZE
