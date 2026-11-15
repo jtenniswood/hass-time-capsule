@@ -16,8 +16,8 @@ entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 | **Diagnostics → Last Successful Reading** | When the most recent hardware reading arrived, with timestamps for each check. |
 | **Diagnostics → Backup Volume Mounted** | Whether the internal backup filesystem is mounted. |
 | **Diagnostics → SMB Port Open and SMB Share Accessible** | Optional checks from Home Assistant for TCP port 445 and read-only access to the configured share. |
+| **Sensors → Temperature** | A single reading, using drive temperature when available, then airflow temperature or a Time Capsule temperature reading. |
 | **Diagnostics → Fan Speed** | Fan speed in RPM. |
-| **Diagnostics → Temperature** | A single reading, using drive temperature when available, then airflow temperature or a Time Capsule temperature reading. |
 | **Diagnostics → Drive health readings** | Reallocated sectors, pending sectors, offline uncorrectable sectors, reported uncorrectable errors, spin retries, Ultra DMA CRC errors, power cycles, and power-on days. Readings appear when the drive reports them. |
 
 On upgrade, Home Assistant removes retired sensors from the device. If an
