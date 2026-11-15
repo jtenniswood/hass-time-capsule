@@ -27,6 +27,7 @@ from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from custom_components.time_capsule.client import (
+    TimeCapsuleAuthError,
     TimeCapsuleConnectionError,
     TimeCapsuleData,
     TimeCapsuleIdentityError,
@@ -181,7 +182,7 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         await async_from_config_dict({"homeassistant": {}}, self.hass)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
 
-    async def async_add_legacy_entry(self, *, version=1, sensors=()):
+    async def async_add_legacy_entry(self, *, version=1, sensors=(), options=None):
         entry = ConfigEntry(
             domain=DOMAIN,
             title=f"Time Capsule ({CONNECTION['host']})",
@@ -189,7 +190,7 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
                 CONNECTION if version == 1
                 else {**CONNECTION, CONF_ENTITY_KEY: CONNECTION["host"]}
             ),
-            options={},
+            options=options or {},
             source="user",
             version=version,
             minor_version=1,
@@ -268,7 +269,7 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             (device,) = dr.async_entries_for_config_entry(registry, entry.entry_id)
             registry.async_update_device(device.id, name_by_user="My Capsule")
 
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             await self.hass.async_block_till_done()
             self.assertEqual(self.hass.states.get(mounted).state, "off")
             self.assertTrue(fetch.call_args.kwargs["include_name"])
@@ -282,12 +283,12 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             smart = self.entity_id("sensor", key, "smart_197")
             self.assertEqual(self.hass.states.get(smart).state, "0")
 
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             self.assertFalse(fetch.call_args.kwargs["include_name"])
             self.assertEqual(registry.async_get(device.id).name, entry.title)
             last_value = self.hass.states.get(last).state
             self.assertNotEqual(self.hass.states.get(disk).state, "unavailable")
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
             self.assertEqual(self.hass.states.get(disk).state, "unavailable")
             self.assertEqual(self.hass.states.get(last).state, last_value)
@@ -376,9 +377,9 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             temperature = "sensor.my_drive_temp"
             self.assertIsNone(registry.async_get(temperature).entity_category)
             self.assertEqual(float(self.hass.states.get(temperature).state), 49)
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             self.assertEqual(float(self.hass.states.get(temperature).state), 52)
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             self.assertEqual(float(self.hass.states.get(temperature).state), 45.32)
 
     async def test_upgrade_reports_retired_sensor_in_existing_blueprint(self):
@@ -494,17 +495,90 @@ automation:
             self.assertEqual(self.hass.states.get(port).state, "off")
             self.assertEqual(self.hass.states.get(share).state, "off")
 
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
+            self.assertEqual(self.hass.states.get(share).state, "off")
+
+            await entry.runtime_data.smb.async_refresh()
             self.assertEqual(self.hass.states.get(share).state, "on")
 
-            await entry.runtime_data.async_refresh()
+            await entry.runtime_data.hardware.async_refresh()
             self.assertEqual(self.hass.states.get(mounted).state, "on")
 
             diagnostics = await async_get_config_entry_diagnostics(self.hass, entry)
             self.assertTrue(diagnostics["checks"]["smb"]["share_accessible"])
             for secret in (CONNECTION["host"], FINGERPRINT, *list(data.values())[1:]):
                 self.assertNotIn(secret, str(diagnostics))
+
+    async def test_smb_stays_active_during_ssh_reauth(self):
+        options = {
+            CONF_MONITOR_SMB: True,
+            CONF_SMB_SHARE: "Backup Data",
+            CONF_SMB_USERNAME: "smb-user",
+            CONF_SMB_PASSWORD: "smb-password",
+        }
+        with (
+            patch(
+                "custom_components.time_capsule.fetch_time_capsule_data",
+                return_value=poll_result(),
+            ) as fetch,
+            patch(
+                "custom_components.time_capsule.probe_smb",
+                return_value=SmbStatus(True, True),
+            ) as probe,
+        ):
+            entry = await self.async_add_legacy_entry(options=options)
+            key = entry.data[CONF_ENTITY_KEY]
+            mount = self.entity_id("binary_sensor", key, "volume_mounted")
+            port = self.entity_id("binary_sensor", key, "smb_port_open")
+            share = self.entity_id("binary_sensor", key, "smb_share_accessible")
+            self.assertEqual(self.hass.states.get(mount).state, "on")
+            self.assertEqual(self.hass.states.get(share).state, "on")
+
+            fetch.side_effect = TimeCapsuleAuthError("SSH password rejected")
+            await entry.runtime_data.hardware.async_refresh()
+            await self.hass.async_block_till_done()
+            self.assertEqual(self.hass.states.get(mount).state, "unavailable")
+            self.assertEqual(self.hass.states.get(port).state, "on")
+            self.assertEqual(self.hass.states.get(share).state, "on")
+            [reauth] = entry.async_get_active_flows(self.hass, {"reauth"})
+            self.hass.config_entries.flow.async_abort(reauth["flow_id"])
+
+            await self.hass.config_entries.async_reload(entry.entry_id)
+            await self.hass.async_block_till_done()
+            self.assertEqual(entry.state, ConfigEntryState.LOADED)
+            self.assertEqual(self.hass.states.get(mount).state, "unavailable")
+            self.assertEqual(self.hass.states.get(share).state, "on")
+
+            fetches = fetch.call_count
+            probe.return_value = SmbStatus(True, False)
+            await self.hass.services.async_call(
+                "homeassistant", "update_entity", {"entity_id": share}, blocking=True
+            )
+            self.assertEqual(fetch.call_count, fetches)
+            self.assertEqual(self.hass.states.get(port).state, "on")
+            self.assertEqual(self.hass.states.get(share).state, "off")
+            diagnostics = await async_get_config_entry_diagnostics(self.hass, entry)
+            self.assertFalse(diagnostics["checks"]["ssh_connected"])
+            self.assertEqual(
+                diagnostics["checks"]["smb"],
+                {"port_open": True, "share_accessible": False},
+            )
+
+            flows = entry.async_get_active_flows(self.hass, {"reauth"})
+            [reauth] = flows
+            fetch.side_effect = None
+            with patch(
+                "custom_components.time_capsule.config_flow.fetch_time_capsule_data",
+                return_value=poll_result(),
+            ):
+                result = await self.hass.config_entries.flow.async_configure(
+                    reauth["flow_id"], {"username": "root", "password": "replacement"}
+                )
+            self.assertEqual(result["reason"], "reauth_successful")
+            await self.hass.async_block_till_done()
+            self.assertEqual(self.hass.states.get(mount).state, "on")
+            self.assertEqual(self.hass.states.get(share).state, "off")
 
     async def test_user_setup_offers_manual_connection_from_the_discovery_menu(self):
         flows = self.hass.config_entries.flow

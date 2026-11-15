@@ -31,7 +31,6 @@ from .const import (
 from .df import DiskUsage, is_volume_mounted, parse_df
 from .envstat import EnvstatReading, parse_envstat
 from .smart import SmartStatus, parse_smart_status
-from .smb import SmbStatus
 
 
 class TimeCapsuleConnectionError(Exception):
@@ -58,7 +57,6 @@ class TimeCapsuleData:
     connected: bool = True
     base_station_name: str | None = None
     volume_mounted: bool | None = None
-    smb: SmbStatus | None = None
 
     @property
     def successful_checks(self) -> set[str]:

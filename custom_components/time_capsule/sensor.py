@@ -50,7 +50,7 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Add fixed sensors and readings as they first arrive."""
-    coordinator: TimeCapsuleCoordinator = entry.runtime_data
+    coordinator: TimeCapsuleCoordinator = entry.runtime_data.hardware
     device_key = entry.data[CONF_ENTITY_KEY]
     fan_keys: set[str] = set()
     smart_ids: set[int] = set()
