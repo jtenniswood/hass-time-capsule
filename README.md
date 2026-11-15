@@ -2,7 +2,7 @@
 
 <img src="custom_components/time_capsule/brand/icon.png" alt="Apple Time Capsule integration icon" width="128" height="128">
 
-Time Capsule Sensors is a custom Home Assistant integration that monitors an
+Apple Time Capsule is a custom Home Assistant integration that monitors an
 Apple AirPort Time Capsule over your local network. It uses SSH to read the
 device's temperature, fan speed, disk space, and drive health. Setup is
 entirely in the Home Assistant UI, and readings refresh every 60 seconds.
@@ -47,7 +47,7 @@ AirPort Extreme compatibility is unverified.
 
 You can also open **HACS → ⋮ → Custom repositories**, add
 `https://github.com/jtenniswood/hass-time-capsule` with the type **Integration**,
-then find **Time Capsule Sensors** and download it. Restart Home Assistant.
+then find **Apple Time Capsule** and download it. Restart Home Assistant.
 
 ### Manual
 
@@ -62,7 +62,7 @@ Copy the whole `custom_components/time_capsule` folder into Home Assistant's
 1. After restarting Home Assistant, open **Settings → Devices & services →
    Integrations**. If your fifth-generation Time Capsule appears under
    **Discovered** via Bonjour, select **Configure**. Otherwise, choose
-   **Add integration → Time Capsule Sensors → Enter address manually**.
+   **Add integration → Apple Time Capsule → Enter address manually**.
 2. Enter the Time Capsule's hostname or IP address, SSH username (default
    `root`), SSH port (default `22`), and base station admin password.
    Bonjour discovery suggests the local hostname when available. You can

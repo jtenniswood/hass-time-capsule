@@ -1,6 +1,6 @@
 {
   "domain": "time_capsule",
-  "name": "Time Capsule Sensors",
+  "name": "Apple Time Capsule",
   "documentation": "https://github.com/jtenniswood/hass-time-capsule",
   "issue_tracker": "https://github.com/jtenniswood/hass-time-capsule/issues",
   "codeowners": ["@mdevils"],
