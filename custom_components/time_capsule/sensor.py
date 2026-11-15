@@ -4,10 +4,10 @@ Set up from the UI (Settings -> Devices & Services -> Add Integration ->
 Time Capsule Sensors); see config_flow.py. Exposes every degC envstat
 reading (other than T_hdd, which this hardware never populates) as a
 temperature sensor, the fan RPM reading as a fan-speed sensor, every SMART
-attribute as its own sensor, one overall SMART pass/fail sensor, and disk
-total/used/free/percent-used sensors for the internal drive. Which envstat
-sensors show up is driven entirely by what envstat reports, not a hardcoded
-list; same for the SMART attributes.
+attribute as its own sensor, one overall SMART pass/fail sensor, and the
+internal drive's total, used, and free space plus percentages used and free.
+Which envstat sensors show up is driven entirely by what envstat reports,
+not a hardcoded list; same for the SMART attributes.
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ DISK_METRIC_NAMES = {
     "used": "Disk Used",
     "free": "Disk Free",
     "percent": "Disk Used Percentage",
+    "free_percent": "Disk Free Percentage",
 }
 
 SMART_TEMPERATURE_DESCRIPTIONS = ("Temperature", "Airflow Temperature")
@@ -208,7 +209,7 @@ class TimeCapsuleSmartStatusSensor(_TimeCapsuleEntity, SensorEntity):
 
 
 class TimeCapsuleDiskSensor(_TimeCapsuleEntity, SensorEntity):
-    """Total/used/free/percent-used usage for the internal drive."""
+    """Capacity and usage sensors for the internal drive."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
 
@@ -220,7 +221,7 @@ class TimeCapsuleDiskSensor(_TimeCapsuleEntity, SensorEntity):
         self._attr_unique_id = f"{DOMAIN}_{host}_disk_{metric}"
         self._attr_name = DISK_METRIC_NAMES[metric]
 
-        if metric == "percent":
+        if metric in ("percent", "free_percent"):
             self._attr_native_unit_of_measurement = PERCENTAGE
         else:
             self._attr_device_class = SensorDeviceClass.DATA_SIZE
@@ -242,6 +243,7 @@ class TimeCapsuleDiskSensor(_TimeCapsuleEntity, SensorEntity):
             "used": disk.used_bytes,
             "free": disk.free_bytes,
             "percent": disk.use_percent,
+            "free_percent": max(0, 100 - disk.use_percent),
         }[self._metric]
 
     @property
