@@ -1,6 +1,7 @@
 """Exercise migration, polling and setup flows using Home Assistant Core."""
 
 import unittest
+from dataclasses import replace
 from ipaddress import ip_address
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -18,6 +19,7 @@ except ModuleNotFoundError as err:
 from homeassistant import loader
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
@@ -28,6 +30,7 @@ from custom_components.time_capsule.client import (
     fetch_time_capsule_data,
 )
 from custom_components.time_capsule.const import (
+    BASE_STATION_NAME_COMMAND,
     CONF_AIRPORT_MAC,
     CONF_ENTITY_KEY,
     CONF_SSH_FINGERPRINT,
@@ -78,6 +81,8 @@ class TestPolling(unittest.TestCase):
         def run_command(_, command):
             if command == DF_COMMAND:
                 raise TimeCapsuleConnectionError("Disk offline")
+            if command == BASE_STATION_NAME_COMMAND:
+                raise TimeCapsuleConnectionError("ACP unavailable")
             return outcomes[command]
 
         with (
@@ -90,8 +95,9 @@ class TestPolling(unittest.TestCase):
                 side_effect=run_command,
             ),
         ):
-            result = fetch_time_capsule_data(**CONNECTION)
+            result = fetch_time_capsule_data(**CONNECTION, include_name=True)
 
+        self.assertIsNone(result.base_station_name)
         self.assertEqual(set(result.errors), {"disk"})
         self.assertEqual(result.successful_checks, {"environment", "smart"})
         self.assertEqual(result.smart.status, "Passed")
@@ -135,7 +141,7 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
     async def async_add_legacy_entry(self):
         entry = ConfigEntry(
             domain=DOMAIN,
-            title="Time Capsule",
+            title=f"Time Capsule ({CONNECTION['host']})",
             data=CONNECTION,
             options={},
             source="user",
@@ -192,21 +198,28 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             "custom_components.time_capsule.fetch_time_capsule_data",
             side_effect=[
                 TimeCapsuleConnectionError("offline"),
-                poll_result(no_disk=True),
+                replace(poll_result(no_disk=True), base_station_name="Time Capsule Media"),
                 poll_result(),
                 TimeCapsuleConnectionError("offline"),
             ],
-        ):
+        ) as fetch:
             entry = await self.async_add_legacy_entry()
             key = CONNECTION["host"]
             connected = self.entity_id("binary_sensor", key, "ssh_connected")
             last = self.entity_id("sensor", key, "last_reading")
             disk = self.entity_id("sensor", key, "disk_free")
             self.assertEqual(self.hass.states.get(connected).state, "off")
+            registry = dr.async_get(self.hass)
+            (device,) = dr.async_entries_for_config_entry(registry, entry.entry_id)
+            registry.async_update_device(device.id, name_by_user="My Capsule")
 
             await entry.runtime_data.async_refresh()
             await self.hass.async_block_till_done()
             self.assertEqual(self.hass.states.get(connected).state, "on")
+            self.assertTrue(fetch.call_args.kwargs["include_name"])
+            self.assertEqual(entry.title, "Time Capsule Media")
+            self.assertEqual(registry.async_get(device.id).name, entry.title)
+            self.assertEqual(registry.async_get(device.id).name_by_user, "My Capsule")
             self.assertEqual(
                 self.hass.states.get(last).attributes["failed_checks"], ["disk"]
             )
@@ -215,6 +228,8 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.hass.states.get(smart).state, "0")
 
             await entry.runtime_data.async_refresh()
+            self.assertFalse(fetch.call_args.kwargs["include_name"])
+            self.assertEqual(registry.async_get(device.id).name, entry.title)
             last_value = self.hass.states.get(last).state
             self.assertNotEqual(self.hass.states.get(disk).state, "unavailable")
             await entry.runtime_data.async_refresh()

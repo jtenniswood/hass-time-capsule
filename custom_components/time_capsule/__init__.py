@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from functools import partial
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
@@ -15,6 +16,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util.dt import utcnow
 
@@ -44,17 +46,21 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
         )
         self.entry = entry
         self.last_success: dict[str, datetime] = {}
+        self._read_name = True
 
     async def _async_update_data(self) -> TimeCapsuleData:
         data = self.entry.data
         try:
             result = await self.hass.async_add_executor_job(
-                fetch_time_capsule_data,
-                data[CONF_HOST],
-                data[CONF_PORT],
-                data[CONF_USERNAME],
-                data[CONF_PASSWORD],
-                data.get(CONF_SSH_FINGERPRINT),
+                partial(
+                    fetch_time_capsule_data,
+                    data[CONF_HOST],
+                    data[CONF_PORT],
+                    data[CONF_USERNAME],
+                    data[CONF_PASSWORD],
+                    data.get(CONF_SSH_FINGERPRINT),
+                    include_name=self._read_name,
+                )
             )
         except TimeCapsuleAuthError as err:
             raise ConfigEntryAuthFailed from err
@@ -71,19 +77,46 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
                 )
             raise UpdateFailed(str(err)) from err
 
-        if (
-            self.entry.data is data
-            and CONF_SSH_FINGERPRINT not in data
-            and result.has_readings
-        ):
-            self.hass.config_entries.async_update_entry(
-                self.entry, data={**data, CONF_SSH_FINGERPRINT: result.fingerprint}
-            )
+        if self.entry.data is data:
+            if self._read_name and result.connected:
+                self._read_name = False
+                _async_register_device(self.hass, self.entry, result.base_station_name)
+            if CONF_SSH_FINGERPRINT not in data and result.has_readings:
+                self.hass.config_entries.async_update_entry(
+                    self.entry, data={**data, CONF_SSH_FINGERPRINT: result.fingerprint}
+                )
 
         now = utcnow()
         for check in result.successful_checks:
             self.last_success[check] = now
         return result
+
+
+def _async_register_device(
+    hass: HomeAssistant, entry: ConfigEntry, base_station_name: str | None
+) -> None:
+    """Register the stable device and apply any name read from AirPort Utility."""
+    registry = dr.async_get(hass)
+    identifier = (DOMAIN, entry.data[CONF_ENTITY_KEY])
+    previous_name = next(
+        (
+            device.name
+            for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
+            if identifier in device.identifiers
+        ),
+        None,
+    )
+    generic_title = f"Time Capsule ({entry.data[CONF_HOST]})"
+    if base_station_name and entry.title in (generic_title, previous_name):
+        hass.config_entries.async_update_entry(entry, title=base_station_name)
+
+    registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={identifier},
+        name=base_station_name or previous_name or "Time Capsule",
+        manufacturer="Apple",
+        model="Apple Time Capsule",
+    )
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -101,6 +134,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up one coordinator and its entities."""
     coordinator = TimeCapsuleCoordinator(hass, entry)
     await coordinator.async_config_entry_first_refresh()
+    if not coordinator.data.connected:
+        _async_register_device(hass, entry, None)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True

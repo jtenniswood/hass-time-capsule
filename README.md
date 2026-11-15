@@ -89,6 +89,9 @@ changes. An existing installation remembers the SSH key on its first successful
 poll after upgrading. A discovered device can update its saved address when it
 is seen again and its SSH key is verified.
 
+Home Assistant uses the name from AirPort Utility when the integration loads.
+Reload the Time Capsule entry to pick up a name you changed in AirPort Utility.
+
 The poll interval is fixed at 60 seconds and isn't currently exposed in the
 UI.
 

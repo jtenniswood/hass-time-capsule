@@ -14,12 +14,7 @@ class TimeCapsuleEntity(CoordinatorEntity[TimeCapsuleCoordinator]):
 
     def __init__(self, coordinator: TimeCapsuleCoordinator, device_key: str) -> None:
         super().__init__(coordinator)
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device_key)},
-            name="Time Capsule",
-            manufacturer="Apple",
-            model="Apple Time Capsule",
-        )
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, device_key)})
 
     @property
     def available(self) -> bool:

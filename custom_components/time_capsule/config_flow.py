@@ -69,6 +69,13 @@ def _same_host(first: str, second: str) -> bool:
     return first.rstrip(".").casefold() == second.rstrip(".").casefold()
 
 
+def _title_for_host(entry: config_entries.ConfigEntry, host: str) -> str:
+    """Update the address on generic titles while retaining existing names."""
+    if entry.title == f"Time Capsule ({entry.data[CONF_HOST]})":
+        return f"Time Capsule ({host})"
+    return entry.title
+
+
 class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure a Time Capsule and verify its identity before reusing a password."""
 
@@ -132,7 +139,10 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not same_address:
                     updates[CONF_HOST] = discovery_info.host
                     return self.async_update_reload_and_abort(
-                        entry, data_updates=updates, reason="already_configured"
+                        entry,
+                        title=_title_for_host(entry, discovery_info.host),
+                        data_updates=updates,
+                        reason="already_configured",
                     )
                 self.hass.config_entries.async_update_entry(
                     entry, data={**data, **updates}
@@ -230,7 +240,9 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         return self.async_abort(reason="already_configured")
                 data[CONF_SSH_FINGERPRINT] = fingerprint
                 if entry:
-                    return self.async_update_reload_and_abort(entry, data=data)
+                    return self.async_update_reload_and_abort(
+                        entry, title=_title_for_host(entry, data[CONF_HOST]), data=data
+                    )
                 self._abort_if_unique_id_configured()
                 data[CONF_ENTITY_KEY] = fingerprint
                 if self._mac and discovered:

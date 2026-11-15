@@ -17,6 +17,7 @@ CONNECT_TIMEOUT = 15
 ENVSTAT_COMMAND = "/usr/sbin/envstat"
 SMART_COMMAND = "/sbin/atactl wd0 smart status"
 DF_COMMAND = "/bin/df /dev/dk2"
+BASE_STATION_NAME_COMMAND = "/usr/bin/acp -q syNm"
 
 # This hardware's SSH server is old enough that current OpenSSH and Paramiko
 # releases no longer offer these by default; they have to be requested

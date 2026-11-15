@@ -17,6 +17,7 @@ from typing import TypeVar
 import paramiko
 
 from .const import (
+    BASE_STATION_NAME_COMMAND,
     CONNECT_TIMEOUT,
     DF_COMMAND,
     ENVSTAT_COMMAND,
@@ -51,6 +52,7 @@ class TimeCapsuleData:
     fingerprint: str | None
     errors: dict[str, str]
     connected: bool = True
+    base_station_name: str | None = None
 
     @property
     def successful_checks(self) -> set[str]:
@@ -152,10 +154,13 @@ def fetch_time_capsule_data(
     username: str,
     password: str,
     fingerprint: str | None = None,
+    *,
+    include_name: bool = False,
 ) -> TimeCapsuleData:
     """Read all checks through one SSH transport and retain partial results."""
     transport, actual = _connect(host, port, username, password, fingerprint)
     errors: dict[str, str] = {}
+    base_station_name = None
     # A stuck exec request or missing exit status can outlive a read timeout.
     deadline = Timer(3 * CONNECT_TIMEOUT, transport.close)
     deadline.daemon = True
@@ -168,6 +173,15 @@ def fetch_time_capsule_data(
             transport, SMART_COMMAND, parse_smart_status, "smart", errors
         )
         disk = _read_check(transport, DF_COMMAND, parse_df, "disk", errors)
+        if include_name:
+            try:
+                name = _run_command(transport, BASE_STATION_NAME_COMMAND).strip()
+            except TimeCapsuleConnectionError:
+                # This optional metadata must not mark any sensor check as failed.
+                pass
+            else:
+                if len(name.splitlines()) == 1 and "\x00" not in name:
+                    base_station_name = name
     finally:
         deadline.cancel()
         transport.close()
@@ -187,4 +201,5 @@ def fetch_time_capsule_data(
         disk=disk,
         fingerprint=actual,
         errors=errors,
+        base_station_name=base_station_name,
     )
