@@ -1,101 +1,82 @@
 # Apple Time Capsule
 
-A Home Assistant integration for modded Apple Time Capsules. It polls the
-device once a minute and reports:
+Time Capsule Sensors is a custom Home Assistant integration that monitors an
+Apple AirPort Time Capsule over your local network. It uses SSH to read the
+device's temperatures, fan speed, disk space, and drive health. Setup is
+entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 
-- Temperature sensors: internal, and external 1-3.
-- Fan speed (RPM).
-- A sensor for every SMART attribute the drive reports (raw value, with the
-  normalized value/threshold/criticality as attributes) -- reallocated
-  sectors, power-on hours, pending sectors, temperature, and so on.
-- An overall SMART Status sensor (`Passed` / `Failed` / `Disabled` /
-  `Not Supported`).
-- Disk usage for the internal drive: total, used, free, percent used, and
-  percent free.
+## What you can monitor
 
-On the Time Capsule device page, individual SMART readings appear under
-**Diagnostics**. The **Sensors** section shows Time Capsule temperatures, fan
-speed, disk usage, and overall SMART Status.
+| On the Home Assistant device page | What it shows |
+| --- | --- |
+| **Sensors** | Available internal and external temperature readings, fan speed (RPM), and the internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
+| **Sensors → SMART Status** | A drive health summary: **Passed**, **Failed**, **Disabled**, or **Not Supported**. If a critical SMART attribute reaches or falls below its threshold, the status is **Failed** and the sensor lists which attributes failed. |
+| **Diagnostics** | Individual SMART readings reported by the drive, such as disk temperature, power-on hours, pending sectors, and reallocated sectors. Each sensor shows the raw reading and includes the normalized value, threshold, and whether the attribute is critical. Unrecognized attributes include their numeric ID in the name. |
 
-It may also work with an AirPort Extreme, since it shares the same internal
-tooling, but that hasn't been tested -- if you try it, let me know via an
-issue.
+In Home Assistant, you can create an alert when **Disk Free Percentage** gets low
+or **SMART Status** changes to **Failed**, and chart temperature and fan speed
+over time. These readings describe the Time Capsule and its drive; they don't
+tell you when a Mac last completed a Time Machine backup.
 
-## Prerequisites
+## Before you install
 
-### 1. Enable SSH on the Time Capsule
+- **Enable SSH on the Time Capsule.** Stock firmware doesn't allow SSH logins.
+  [TimeCapsuleSMB](https://github.com/jamesyc/TimeCapsuleSMB) can enable SSH when
+  you add the device in its macOS app or run `tcapsule configure` in the CLI.
+  The integration only needs SSH access; it doesn't require a Samba installation.
+- **Have the device password handy.** Use the Time Capsule's base station admin
+  password, the same one you enter in TimeCapsuleSMB.
+- **Choose an address Home Assistant can reach.** Use a hostname that resolves
+  from Home Assistant or an IP address. If you use an IP address, reserve it in
+  your router's DHCP settings so it stays the same.
 
-Stock Time Capsule firmware doesn't allow SSH logins. Use
-[TimeCapsuleSMB](https://github.com/jamesyc/TimeCapsuleSMB) first -- besides
-installing modern Samba, its setup step enables SSH on the device for you
-(it needs your Time Capsule's admin password to do that). Run its
-`configure` step (or the equivalent step in its macOS GUI app) and confirm
-SSH comes up before moving on.
+AirPort Extreme compatibility is unverified. Setup currently expects the
+internal drive and filesystem commands used by the Time Capsule.
 
-### 2. If you'll use an IP address, make it static
-
-The integration accepts either a hostname or an IP address for the Time
-Capsule. If you use an IP, reserve it in your router (DHCP reservation,
-sometimes called a "static lease" or "address reservation" -- look up your
-router's admin UI for the exact term), keyed to the Time Capsule's MAC
-address, so it doesn't change on you later. A hostname doesn't need this,
-as long as it reliably resolves to the device.
-
-### 3. Know your Time Capsule's password
-
-The SSH password is your Time Capsule's own admin password -- the same one
-you used with TimeCapsuleSMB above.
-
-## Installation
+## Install
 
 ### HACS (recommended)
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=mdevils&repository=hass-time-capsule&category=integration)
+[![Open this repository in HACS](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jtenniswood&repository=hass-time-capsule&category=integration)
 
-Or manually: HACS -> the "..." menu (top right) -> **Custom repositories**
--> add `https://github.com/mdevils/hass-time-capsule` as an **Integration**
--> find "Time Capsule Sensors" in HACS and install it.
-
-Restart Home Assistant after installing.
+You can also open **HACS → ⋮ → Custom repositories**, add
+`https://github.com/jtenniswood/hass-time-capsule` with the type **Integration**,
+then find **Time Capsule Sensors** and download it. Restart Home Assistant.
 
 ### Manual
 
-Copy `custom_components/time_capsule` into your Home Assistant `config/custom_components/` directory, then restart Home Assistant.
+Download the source archive from the [latest release](https://github.com/jtenniswood/hass-time-capsule/releases/latest).
+Copy the whole `custom_components/time_capsule` folder into Home Assistant's
+`config/custom_components/` directory, then restart Home Assistant.
 
-## Configuration
+## Connect your Time Capsule
 
-Configuration is done entirely from the UI -- there's no YAML.
+1. Go to **Settings → Devices & services → Add integration** and search for
+   **Time Capsule Sensors**.
+2. Enter the Time Capsule's hostname or IP address, SSH username (default
+   `root`), SSH port (default `22`), and base station admin password.
+3. Submit the form. Home Assistant checks the SSH login and runs the sensor
+   commands before it saves the connection.
 
-1. **Settings -> Devices & Services -> Add Integration -> Time Capsule Sensors.**
-2. Enter:
-   - **Host**: the Time Capsule's hostname or IP address.
-   - **Username**: `root` by default.
-   - **Port**: `22` by default.
-   - **Password**: the Time Capsule's admin password, from the prerequisites above.
-3. The integration connects and fetches real data before saving, so a wrong
-   host/password shows an inline error immediately instead of failing
-   silently later.
+Home Assistant uses the base station name from AirPort Utility when it can
+read it. If you rename the base station in AirPort Utility, reload the
+integration entry to pick up the new name. To edit the connection details,
+open the integration entry and select **Configure**.
 
-To change any of these later, open the integration's entry and click
-**Configure** -- no need to remove and re-add it.
-
-Home Assistant uses the name from AirPort Utility when the integration loads.
-Reload the Time Capsule entry to pick up a name you changed in AirPort Utility.
-
-The poll interval is fixed at 60 seconds and isn't currently exposed in the
-UI.
+If setup reports a connection error, check the address, port, and whether
+SSH is enabled and reachable from Home Assistant. If it reports an
+authentication error, check the SSH username and base station admin password.
+If existing sensors become unavailable, check **Settings → System → Logs**
+for polling errors.
 
 ## How it works
 
-The integration authenticates over SSH and runs three commands: `envstat`,
-for the temperature and fan readings; `atactl wd0 smart status`, for the
-SMART table; and `df /dev/dk2`, for disk usage. The SMART Status sensor's
-pass/fail is computed the same way `smartctl`'s health verdict is: an
-attribute has failed once its normalized value drops to or below its
-threshold on a row marked critical.
+Each poll opens one SSH connection and runs `envstat` for temperature and fan
+speed, `atactl wd0 smart status` for drive health, and `df /dev/dk2` for disk
+usage. On load, it also tries `acp -q syNm` to read the base station name.
 
-These Time Capsules run an old NetBSD-based `sshd` that only offers a
-`diffie-hellman-group14-sha1` key exchange and signs its host key with
-plain `ssh-rsa` -- both long dropped as defaults by current OpenSSH and
-Paramiko. The integration requests them explicitly, so no manual SSH
-configuration is needed on your end.
+The integration handles the older SSH algorithms the Time Capsule requires
+(`diffie-hellman-group14-sha1` and `ssh-rsa`). No manual SSH client configuration
+is needed in Home Assistant.
+
+[Release history](https://github.com/jtenniswood/hass-time-capsule/releases) · [License](LICENSE)
