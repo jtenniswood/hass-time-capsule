@@ -41,5 +41,26 @@
       "cannot_verify_discovery": "The discovered address could not be verified against the saved Time Capsule."
     },
     "flow_title": "{name}"
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Backup share monitoring",
+        "description": "Check TCP port 445 from Home Assistant. To also open a share for reading, enter its name and separate SMB login. Clear the share and username to use only the port check.",
+        "data": {
+          "monitor_smb": "Monitor the SMB service",
+          "smb_share": "SMB share name",
+          "smb_username": "SMB username",
+          "smb_password": "SMB password"
+        },
+        "data_description": {
+          "smb_password": "Leave blank to keep the password for an unchanged share and username."
+        }
+      }
+    },
+    "error": {
+      "invalid_share": "Enter the share name only, without a server address or folder path.",
+      "incomplete_share": "Enter a share name, SMB username, and password together, or clear all three entries."
+    }
   }
 }

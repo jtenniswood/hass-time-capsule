@@ -37,9 +37,16 @@ from custom_components.time_capsule.const import (
     DF_COMMAND,
     DOMAIN,
     ENVSTAT_COMMAND,
+    MOUNT_COMMAND,
+    CONF_MONITOR_SMB,
+    CONF_SMB_SHARE,
+    CONF_SMB_USERNAME,
+    CONF_SMB_PASSWORD,
     SMART_COMMAND,
 )
-from custom_components.time_capsule.df import parse_df
+from custom_components.time_capsule.df import is_volume_mounted, parse_df
+from custom_components.time_capsule.diagnostics import async_get_config_entry_diagnostics
+from custom_components.time_capsule.smb import SmbStatus
 from custom_components.time_capsule.envstat import parse_envstat
 from custom_components.time_capsule.smart import parse_smart_status
 
@@ -56,6 +63,7 @@ def poll_result(*, no_disk=False):
         smart=parse_smart_status(SMART),
         disk=None if no_disk else parse_df(DF),
         fingerprint=FINGERPRINT,
+        volume_mounted=not no_disk,
         errors={"disk": "Disk offline"} if no_disk else {},
     )
 
@@ -81,6 +89,8 @@ class TestPolling(unittest.TestCase):
         def run_command(_, command):
             if command == DF_COMMAND:
                 raise TimeCapsuleConnectionError("Disk offline")
+            if command == MOUNT_COMMAND:
+                return "/dev/md0a on / type ffs (local)"
             if command == BASE_STATION_NAME_COMMAND:
                 raise TimeCapsuleConnectionError("ACP unavailable")
             return outcomes[command]
@@ -98,6 +108,7 @@ class TestPolling(unittest.TestCase):
             result = fetch_time_capsule_data(**CONNECTION, include_name=True)
 
         self.assertIsNone(result.base_station_name)
+        self.assertIs(result.volume_mounted, False)
         self.assertEqual(set(result.errors), {"disk"})
         self.assertEqual(result.successful_checks, {"environment", "smart"})
         self.assertEqual(result.smart.status, "Passed")
@@ -120,6 +131,18 @@ class TestPolling(unittest.TestCase):
         channel.recv.side_effect = [SMART.encode(), b""]
         with self.assertRaises(TimeCapsuleConnectionError):
             _run_command(transport, SMART_COMMAND)
+
+    def test_mount_output_distinguishes_missing_and_unreadable(self):
+        listing = "/dev/md0a on / type ffs (local)\n"
+        self.assertIs(is_volume_mounted(listing, "/dev/dk2"), False)
+        self.assertIs(
+            is_volume_mounted(
+                listing + "/dev/dk2 on /Volumes/Backup Data type hfs (local)",
+                "/dev/dk2",
+            ),
+            True,
+        )
+        self.assertIsNone(is_volume_mounted("mount: permission denied", "/dev/dk2"))
 
     def test_changed_ssh_key_is_rejected_before_password_is_sent(self):
         from custom_components.time_capsule.client import _connect
@@ -253,6 +276,62 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.hass.states.get(connected).state, "off")
             self.assertEqual(self.hass.states.get(disk).state, "unavailable")
             self.assertEqual(self.hass.states.get(last).state, last_value)
+
+    async def test_smb_and_mount_checks_and_diagnostics(self):
+        with (
+            patch(
+                "custom_components.time_capsule.fetch_time_capsule_data",
+                side_effect=[
+                    poll_result(),
+                    poll_result(no_disk=True),  # SSH works while the volume and SMB fail.
+                    TimeCapsuleConnectionError("offline"),  # SMB can recover first.
+                    poll_result(),
+                ],
+            ),
+            patch(
+                "custom_components.time_capsule.probe_smb",
+                side_effect=[SmbStatus(False, False), SmbStatus(True, True), SmbStatus(True, True)],
+            ) as probe,
+        ):
+            entry = await self.async_add_legacy_entry()
+            key = CONNECTION["host"]
+            mounted = self.entity_id("binary_sensor", key, "volume_mounted")
+            self.assertEqual(self.hass.states.get(mounted).state, "on")
+            probe.assert_not_called()
+
+            flows = self.hass.config_entries.options
+            flow = await flows.async_init(entry.entry_id)
+            data = {
+                CONF_MONITOR_SMB: True,
+                CONF_SMB_SHARE: "Backup Data",
+                CONF_SMB_USERNAME: "smb-test-account",
+                CONF_SMB_PASSWORD: "smb-test-password",
+            }
+            result = await flows.async_configure(flow["flow_id"], data)
+            self.assertEqual(result["data"], data)
+            await self.hass.async_block_till_done()
+            probe.assert_called_with(CONNECTION["host"], "Backup Data", "smb-test-account", "smb-test-password")
+            port = self.entity_id("binary_sensor", key, "smb_port_open")
+            share = self.entity_id("binary_sensor", key, "smb_share_accessible")
+            ssh = self.entity_id("binary_sensor", key, "ssh_connected")
+            self.assertEqual(self.hass.states.get(ssh).state, "on")
+            self.assertEqual(self.hass.states.get(mounted).state, "off")
+            self.assertEqual(self.hass.states.get(port).state, "off")
+            self.assertEqual(self.hass.states.get(share).state, "off")
+
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(self.hass.states.get(ssh).state, "off")
+            self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
+            self.assertEqual(self.hass.states.get(share).state, "on")
+
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(self.hass.states.get(ssh).state, "on")
+            self.assertEqual(self.hass.states.get(mounted).state, "on")
+
+            diagnostics = await async_get_config_entry_diagnostics(self.hass, entry)
+            self.assertTrue(diagnostics["checks"]["smb"]["share_accessible"])
+            for secret in (CONNECTION["host"], FINGERPRINT, *list(data.values())[1:]):
+                self.assertNotIn(secret, str(diagnostics))
 
     async def test_discovery_confirms_ssh_credentials_and_sets_up_one_entry(self):
         flows = self.hass.config_entries.flow

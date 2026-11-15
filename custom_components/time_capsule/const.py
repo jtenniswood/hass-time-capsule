@@ -16,7 +16,10 @@ CONNECT_TIMEOUT = 15
 # on this device, even though an interactive shell's profile does.
 ENVSTAT_COMMAND = "/usr/sbin/envstat"
 SMART_COMMAND = "/sbin/atactl wd0 smart status"
-DF_COMMAND = "/bin/df /dev/dk2"
+BACKUP_DEVICE = "/dev/dk2"
+DF_COMMAND = f"/bin/df {BACKUP_DEVICE}"
+MOUNT_COMMAND = "/sbin/mount"
+HARDWARE_CHECKS = ("environment", "smart", "disk")
 BASE_STATION_NAME_COMMAND = "/usr/bin/acp -q syNm"
 
 # This hardware's SSH server is old enough that current OpenSSH and Paramiko
@@ -49,4 +52,8 @@ FRIENDLY_NAMES = {
 CONF_ENTITY_KEY = "entity_key"
 CONF_SSH_FINGERPRINT = "ssh_fingerprint"
 CONF_AIRPORT_MAC = "airport_mac"
+CONF_MONITOR_SMB = "monitor_smb"
+CONF_SMB_SHARE = "smb_share"
+CONF_SMB_USERNAME = "smb_username"
+CONF_SMB_PASSWORD = "smb_password"
 AIRPORT_TIME_CAPSULE_MODEL = "119"

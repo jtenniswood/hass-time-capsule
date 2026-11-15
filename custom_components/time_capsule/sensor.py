@@ -38,6 +38,7 @@ from .const import (
     CONF_ENTITY_KEY,
     DOMAIN,
     FRIENDLY_NAMES,
+    HARDWARE_CHECKS,
     UNIT_FAN_RPM,
     UNIT_TEMPERATURE,
 )
@@ -281,7 +282,7 @@ class TimeCapsuleLastReadingSensor(TimeCapsuleEntity, SensorEntity, RestoreEntit
         if previous is None:
             return
         saved = previous.attributes.get("last_success_by_check", {})
-        for check in ("environment", "smart", "disk"):
+        for check in HARDWARE_CHECKS:
             value = saved.get(check)
             if isinstance(value, str) and (timestamp := parse_datetime(value)):
                 self.coordinator.last_success.setdefault(check, timestamp)
@@ -292,7 +293,7 @@ class TimeCapsuleLastReadingSensor(TimeCapsuleEntity, SensorEntity, RestoreEntit
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
-        checks = ("environment", "smart", "disk")
+        checks = HARDWARE_CHECKS
         last_success = {
             check: self.coordinator.last_success[check].isoformat()
             for check in checks

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from asyncio import gather
+from dataclasses import replace
 from datetime import datetime
 from functools import partial
 
@@ -17,7 +19,7 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import utcnow
 
 from .client import (
@@ -26,7 +28,17 @@ from .client import (
     TimeCapsuleData,
     fetch_time_capsule_data,
 )
-from .const import CONF_ENTITY_KEY, CONF_SSH_FINGERPRINT, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .const import (
+    CONF_ENTITY_KEY,
+    CONF_MONITOR_SMB,
+    CONF_SMB_PASSWORD,
+    CONF_SMB_SHARE,
+    CONF_SMB_USERNAME,
+    CONF_SSH_FINGERPRINT,
+    DEFAULT_SCAN_INTERVAL,
+    DOMAIN,
+)
+from .smb import probe_smb
 from .smart import SmartStatus
 
 _LOGGER = logging.getLogger(__name__)
@@ -49,6 +61,22 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
         self._read_name = True
 
     async def _async_update_data(self) -> TimeCapsuleData:
+        options = self.entry.options
+        if options.get(CONF_MONITOR_SMB):
+            hardware, smb = await gather(
+                self._async_read_hardware(),
+                self.hass.async_add_executor_job(
+                    probe_smb,
+                    self.entry.data[CONF_HOST],
+                    options.get(CONF_SMB_SHARE, ""),
+                    options.get(CONF_SMB_USERNAME, ""),
+                    options.get(CONF_SMB_PASSWORD, ""),
+                ),
+            )
+            return replace(hardware, smb=smb)
+        return await self._async_read_hardware()
+
+    async def _async_read_hardware(self) -> TimeCapsuleData:
         data = self.entry.data
         try:
             result = await self.hass.async_add_executor_job(
@@ -65,17 +93,19 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
         except TimeCapsuleAuthError as err:
             raise ConfigEntryAuthFailed from err
         except TimeCapsuleConnectionError as err:
-            if self.data is None:
-                # Install diagnostic entities even when HA starts while the Capsule is offline.
-                return TimeCapsuleData(
-                    envstat={},
-                    smart=SmartStatus(None, None, ()),
-                    disk=None,
-                    fingerprint=None,
-                    errors={},
-                    connected=False,
-                )
-            raise UpdateFailed(str(err)) from err
+            if self.data is None or self.data.connected:
+                _LOGGER.warning("Time Capsule SSH unavailable: %s", err)
+            return TimeCapsuleData(
+                envstat={},
+                smart=SmartStatus(None, None, ()),
+                disk=None,
+                fingerprint=None,
+                errors={},
+                connected=False,
+            )
+
+        if self.data is not None and not self.data.connected:
+            _LOGGER.info("Time Capsule SSH connection restored")
 
         if self.entry.data is data:
             if self._read_name and result.connected:

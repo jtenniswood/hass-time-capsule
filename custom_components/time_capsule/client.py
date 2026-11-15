@@ -17,17 +17,21 @@ from typing import TypeVar
 import paramiko
 
 from .const import (
+    BACKUP_DEVICE,
     BASE_STATION_NAME_COMMAND,
     CONNECT_TIMEOUT,
     DF_COMMAND,
     ENVSTAT_COMMAND,
+    HARDWARE_CHECKS,
+    MOUNT_COMMAND,
     SMART_COMMAND,
     SSH_HOST_KEY_ALGORITHM,
     SSH_KEX_ALGORITHMS,
 )
-from .df import DiskUsage, parse_df
+from .df import DiskUsage, is_volume_mounted, parse_df
 from .envstat import EnvstatReading, parse_envstat
 from .smart import SmartStatus, parse_smart_status
+from .smb import SmbStatus
 
 
 class TimeCapsuleConnectionError(Exception):
@@ -53,10 +57,12 @@ class TimeCapsuleData:
     errors: dict[str, str]
     connected: bool = True
     base_station_name: str | None = None
+    volume_mounted: bool | None = None
+    smb: SmbStatus | None = None
 
     @property
     def successful_checks(self) -> set[str]:
-        return {"environment", "smart", "disk"} - self.errors.keys()
+        return set(HARDWARE_CHECKS) - self.errors.keys() if self.connected else set()
 
     @property
     def has_readings(self) -> bool:
@@ -165,6 +171,7 @@ def fetch_time_capsule_data(
     transport, actual = _connect(host, port, username, password, fingerprint)
     errors: dict[str, str] = {}
     base_station_name = None
+    volume_mounted = None
     # A stuck exec request or missing exit status can outlive a read timeout.
     deadline = Timer(3 * CONNECT_TIMEOUT, transport.close)
     deadline.daemon = True
@@ -177,6 +184,16 @@ def fetch_time_capsule_data(
             transport, SMART_COMMAND, parse_smart_status, "smart", errors
         )
         disk = _read_check(transport, DF_COMMAND, parse_df, "disk", errors)
+        if disk is not None and disk.filesystem == BACKUP_DEVICE:
+            volume_mounted = True
+        else:
+            disk = None
+            try:
+                volume_mounted = is_volume_mounted(
+                    _run_command(transport, MOUNT_COMMAND), BACKUP_DEVICE
+                )
+            except TimeCapsuleConnectionError:
+                pass
         if include_name:
             try:
                 name = _run_command(transport, BASE_STATION_NAME_COMMAND).strip()
@@ -206,4 +223,5 @@ def fetch_time_capsule_data(
         fingerprint=actual,
         errors=errors,
         base_station_name=base_station_name,
+        volume_mounted=volume_mounted,
     )

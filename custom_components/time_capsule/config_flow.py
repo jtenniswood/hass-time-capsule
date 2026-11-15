@@ -10,6 +10,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
     TextSelector,
@@ -28,6 +29,10 @@ from .const import (
     AIRPORT_TIME_CAPSULE_MODEL,
     CONF_AIRPORT_MAC,
     CONF_ENTITY_KEY,
+    CONF_MONITOR_SMB,
+    CONF_SMB_PASSWORD,
+    CONF_SMB_SHARE,
+    CONF_SMB_USERNAME,
     CONF_SSH_FINGERPRINT,
     DEFAULT_PORT,
     DEFAULT_USERNAME,
@@ -82,6 +87,11 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 2
     _discovery: ZeroconfServiceInfo | None = None
     _mac: str | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        return TimeCapsuleOptionsFlow()
 
     async def _async_validate(
         self, data: Mapping[str, Any], fingerprint: str | None = None
@@ -255,5 +265,56 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id=step,
             data_schema=self.add_suggested_values_to_schema(schema, current),
+            errors=errors,
+        )
+
+
+class TimeCapsuleOptionsFlow(config_entries.OptionsFlowWithReload):
+    """Enable the optional SMB checks and set separate share credentials."""
+
+    async def async_step_init(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            if not user_input[CONF_MONITOR_SMB]:
+                return self.async_create_entry(data={})
+
+            share = user_input.get(CONF_SMB_SHARE, "").strip()
+            username = user_input.get(CONF_SMB_USERNAME, "").strip()
+            password = user_input.get(CONF_SMB_PASSWORD, "")
+            saved = self.config_entry.options
+            if (share, username) == (
+                saved.get(CONF_SMB_SHARE),
+                saved.get(CONF_SMB_USERNAME),
+            ) and not password:
+                password = saved.get(CONF_SMB_PASSWORD, "")
+            if any(char in share for char in ("/", "\\", "\x00")) or share in (".", ".."):
+                errors[CONF_SMB_SHARE] = "invalid_share"
+            elif bool(share) != bool(username and password) or (
+                not share and (username or password)
+            ):
+                errors["base"] = "incomplete_share"
+            else:
+                return self.async_create_entry(data={
+                    CONF_MONITOR_SMB: True,
+                    CONF_SMB_SHARE: share,
+                    CONF_SMB_USERNAME: username,
+                    CONF_SMB_PASSWORD: password,
+                })
+
+        saved = self.config_entry.options
+        defaults = dict(user_input if user_input is not None else saved)
+        # A blank password on an existing share keeps the saved password.
+        defaults.pop(CONF_SMB_PASSWORD, None)
+        schema = vol.Schema({
+            vol.Required(CONF_MONITOR_SMB, default=False): cv.boolean,
+            vol.Optional(CONF_SMB_SHARE): cv.string,
+            vol.Optional(CONF_SMB_USERNAME): cv.string,
+            vol.Optional(CONF_SMB_PASSWORD): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            ),
+        })
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, defaults),
             errors=errors,
         )
