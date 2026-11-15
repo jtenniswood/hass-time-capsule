@@ -144,6 +144,8 @@ class TimeCapsuleSmartAttributeSensor(_TimeCapsuleEntity, SensorEntity):
         attr = self._attribute()
         self._attr_unique_id = f"{DOMAIN}_{host}_{attr.key}"
         self._attr_name = attr.description
+        if attr.description.casefold() == "unknown":
+            self._attr_name = f"Unknown SMART Attribute {attr.id}"
 
         if attr.description in SMART_TEMPERATURE_DESCRIPTIONS:
             self._attr_device_class = SensorDeviceClass.TEMPERATURE
