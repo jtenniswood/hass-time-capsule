@@ -23,6 +23,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import (
     CONF_HOST,
     PERCENTAGE,
+    EntityCategory,
     UnitOfInformation,
     UnitOfTemperature,
     UnitOfTime,
@@ -134,6 +135,7 @@ class TimeCapsuleEnvstatSensor(_TimeCapsuleEntity, SensorEntity):
 class TimeCapsuleSmartAttributeSensor(_TimeCapsuleEntity, SensorEntity):
     """A single row of the SMART attribute table (its raw value)."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(

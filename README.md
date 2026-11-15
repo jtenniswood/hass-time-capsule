@@ -13,6 +13,10 @@ device once a minute and reports:
 - Disk usage for the internal drive: total, used, free, percent used, and
   percent free.
 
+On the Time Capsule device page, individual SMART readings appear under
+**Diagnostics**. The **Sensors** section shows Time Capsule temperatures, fan
+speed, disk usage, and overall SMART Status.
+
 It may also work with an AirPort Extreme, since it shares the same internal
 tooling, but that hasn't been tested -- if you try it, let me know via an
 issue.
