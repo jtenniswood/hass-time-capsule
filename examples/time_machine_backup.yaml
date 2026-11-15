@@ -1,0 +1,44 @@
+# Home Assistant package. Create one webhook and sensor pair per Mac and destination.
+template:
+  - triggers:
+      - trigger: webhook
+        webhook_id: !secret time_machine_mac_webhook
+        allowed_methods: [POST]
+        local_only: true
+    conditions:
+      - condition: template
+        value_template: >
+          {% set timestamp = as_timestamp((trigger.json | default({}, true)).get('backup_at'), 0) %}
+          {{ 0 < timestamp <= as_timestamp(now()) + 300 }}
+    sensor:
+      - name: Mac Last Time Capsule Backup
+        unique_id: mac_last_time_capsule_backup
+        device_class: timestamp
+        state: >
+          {% set reported = as_timestamp(trigger.json.backup_at) %}
+          {% set previous = as_timestamp(this.state, 0) %}
+          {{ as_datetime([reported, previous] | max).isoformat() }}
+
+  - sensor:
+      - name: Mac Time Capsule Backup Age
+        unique_id: mac_time_capsule_backup_age
+        unit_of_measurement: h
+        state_class: measurement
+        availability: >
+          {{ as_timestamp(states('sensor.mac_last_time_capsule_backup'), 0) > 0 }}
+        state: >
+          {% set backup = as_timestamp(states('sensor.mac_last_time_capsule_backup'), 0) %}
+          {{ ([0, (as_timestamp(now()) - backup) / 3600] | max) | round(1) if backup else none }}
+
+automation:
+  - id: mac_time_capsule_backup_overdue
+    alias: Mac Time Capsule backup overdue
+    triggers:
+      - trigger: numeric_state
+        entity_id: sensor.mac_time_capsule_backup_age
+        above: 48
+    actions:
+      - action: persistent_notification.create
+        data:
+          title: Time Machine backup overdue
+          message: This Mac has not reported a successful backup to the Time Capsule in over 48 hours.
