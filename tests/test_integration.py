@@ -435,7 +435,7 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(flow["step_id"], "connect")
         host_field = next(key for key in flow["data_schema"].schema if key == "host")
         host = host_field.description["suggested_value"]
-        self.assertEqual(host, "Time-Capsule-Test.local")
+        self.assertEqual(host, CONNECTION["host"])
 
         with (
             patch(
@@ -458,12 +458,51 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(entry.unique_id, FINGERPRINT)
         self.assertEqual(len(self.hass.config_entries.async_entries(DOMAIN)), 1)
 
-    async def test_discovery_suggests_ip_without_a_hostname(self):
+    async def test_discovery_replaces_saved_hostname_after_ssh_verification(self):
+        info = discovery(CONNECTION["host"])
+        hostname = info.hostname.rstrip(".")
         flows = self.hass.config_entries.flow
-        info = replace(discovery(CONNECTION["host"]), hostname="")
-        flow = await flows.async_init(DOMAIN, context={"source": "zeroconf"}, data=info)
-        host_field = next(key for key in flow["data_schema"].schema if key == "host")
-        self.assertEqual(host_field.description["suggested_value"], CONNECTION["host"])
+        with patch(
+            "custom_components.time_capsule.fetch_time_capsule_data",
+            return_value=poll_result(),
+        ):
+            entry = await self.async_add_legacy_entry()
+            self.hass.config_entries.async_update_entry(
+                entry,
+                data={
+                    **entry.data,
+                    "host": hostname,
+                    CONF_AIRPORT_MAC: "02:00:00:00:00:01",
+                },
+                title=f"Time Capsule ({hostname})",
+            )
+            entity_key = entry.data[CONF_ENTITY_KEY]
+            with patch(
+                "custom_components.time_capsule.config_flow.fetch_time_capsule_data",
+                side_effect=[TimeCapsuleIdentityError("changed"), poll_result()],
+            ) as validate:
+                rejected = await flows.async_init(
+                    DOMAIN, context={"source": "zeroconf"}, data=info
+                )
+                self.assertEqual(rejected["reason"], "cannot_verify_discovery")
+                self.assertEqual(entry.data["host"], hostname)
+
+                updated = await flows.async_init(
+                    DOMAIN, context={"source": "zeroconf"}, data=info
+                )
+                await self.hass.async_block_till_done()
+            self.assertEqual(updated["reason"], "already_configured")
+            validate.assert_called_with(
+                CONNECTION["host"],
+                CONNECTION["port"],
+                CONNECTION["username"],
+                CONNECTION["password"],
+                FINGERPRINT,
+            )
+            self.assertEqual(entry.data["host"], CONNECTION["host"])
+            self.assertEqual(entry.title, f"Time Capsule ({CONNECTION['host']})")
+            self.assertEqual(entry.data[CONF_ENTITY_KEY], entity_key)
+            self.assertEqual(self.hass.config_entries.async_entries(DOMAIN), [entry])
 
     async def test_last_reading_is_restored_when_reloaded_offline(self):
         with patch(
