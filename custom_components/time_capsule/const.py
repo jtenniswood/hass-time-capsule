@@ -45,3 +45,8 @@ FRIENDLY_NAMES = {
     "T_external3": "External Temperature 3",
     "Fan_rpm": "Fan Speed",
 }
+
+CONF_ENTITY_KEY = "entity_key"
+CONF_SSH_FINGERPRINT = "ssh_fingerprint"
+CONF_AIRPORT_MAC = "airport_mac"
+AIRPORT_TIME_CAPSULE_MODEL = "119"

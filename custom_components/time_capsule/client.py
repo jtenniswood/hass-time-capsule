@@ -6,8 +6,13 @@ via `hass.async_add_executor_job`, never awaited directly.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass
+from threading import Timer
+from typing import TypeVar
 
 import paramiko
 
@@ -29,26 +34,45 @@ class TimeCapsuleConnectionError(Exception):
     """Raised when the SSH connection or a remote command fails."""
 
 
+class TimeCapsuleIdentityError(TimeCapsuleConnectionError):
+    """The SSH server's key differs from the saved device key."""
+
+
 class TimeCapsuleAuthError(TimeCapsuleConnectionError):
     """Raised when the SSH server rejects the username/password."""
 
 
 @dataclass(frozen=True)
 class TimeCapsuleData:
-    """Sensor readings and optional base station name from one SSH session."""
+    """Everything fetched from one poll: envstat, SMART status, and disk usage."""
 
     envstat: dict[str, EnvstatReading]
     smart: SmartStatus
     disk: DiskUsage | None
+    fingerprint: str | None
+    errors: dict[str, str]
+    connected: bool = True
     base_station_name: str | None = None
 
+    @property
+    def successful_checks(self) -> set[str]:
+        return {"environment", "smart", "disk"} - self.errors.keys()
 
-def _connect(host: str, port: int, username: str, password: str) -> paramiko.Transport:
+    @property
+    def has_readings(self) -> bool:
+        return bool(self.envstat or self.smart.status != "Unknown" or self.disk)
+
+
+def _connect(
+    host: str, port: int, username: str, password: str, fingerprint: str | None
+) -> tuple[paramiko.Transport, str]:
     """Open and authenticate an SSH transport to the Time Capsule."""
     try:
         sock = socket.create_connection((host, port), timeout=CONNECT_TIMEOUT)
     except OSError as err:
-        raise TimeCapsuleConnectionError(f"Could not reach {host}:{port}: {err}") from err
+        raise TimeCapsuleConnectionError(
+            f"Could not reach {host}:{port}: {err}"
+        ) from err
 
     transport = paramiko.Transport(sock)
     try:
@@ -58,16 +82,29 @@ def _connect(host: str, port: int, username: str, password: str) -> paramiko.Tra
         # `-o KexAlgorithms=... -o HostKeyAlgorithms=+ssh-rsa` on the CLI.
         options = transport.get_security_options()
         options.kex = SSH_KEX_ALGORITHMS
-        options.key_types = tuple(dict.fromkeys((*options.key_types, SSH_HOST_KEY_ALGORITHM)))
-        transport.connect(hostkey=None, username=username, password=password)
+        options.key_types = tuple(
+            dict.fromkeys((*options.key_types, SSH_HOST_KEY_ALGORITHM))
+        )
+        transport.banner_timeout = CONNECT_TIMEOUT
+        transport.auth_timeout = CONNECT_TIMEOUT
+        transport.start_client(timeout=CONNECT_TIMEOUT)
+        key = transport.get_remote_server_key()
+        digest = hashlib.sha256(key.asbytes()).digest()
+        actual = "SHA256:" + base64.b64encode(digest).decode("ascii").rstrip("=")
+        if fingerprint is not None and fingerprint != actual:
+            transport.close()
+            raise TimeCapsuleIdentityError(f"SSH host key changed for {host}")
+        transport.auth_password(username, password)
     except paramiko.AuthenticationException as err:
         transport.close()
         raise TimeCapsuleAuthError(f"Authentication to {host} failed: {err}") from err
     except (paramiko.SSHException, OSError, EOFError) as err:
         transport.close()
-        raise TimeCapsuleConnectionError(f"SSH handshake with {host} failed: {err}") from err
+        raise TimeCapsuleConnectionError(
+            f"SSH handshake with {host} failed: {err}"
+        ) from err
 
-    return transport
+    return transport, actual
 
 
 def _run_command(transport: paramiko.Transport, command: str) -> str:
@@ -75,52 +112,94 @@ def _run_command(transport: paramiko.Transport, command: str) -> str:
     try:
         with transport.open_session(timeout=CONNECT_TIMEOUT) as channel:
             channel.settimeout(CONNECT_TIMEOUT)
+            if command == SMART_COMMAND:
+                # atactl writes its ATA failure verdict and unsupported message to stderr.
+                channel.set_combine_stderr(True)
             channel.exec_command(command)
-
             chunks: list[bytes] = []
-            while True:
-                chunk = channel.recv(4096)
-                if not chunk:
-                    break
+            while chunk := channel.recv(4096):
                 chunks.append(chunk)
             exit_status = channel.recv_exit_status()
     except (paramiko.SSHException, OSError, EOFError) as err:
         raise TimeCapsuleConnectionError(f"'{command}' failed: {err}") from err
 
     if exit_status != 0:
-        raise TimeCapsuleConnectionError(f"'{command}' exited with status {exit_status}")
+        raise TimeCapsuleConnectionError(
+            f"'{command}' exited with status {exit_status}"
+        )
 
     return b"".join(chunks).decode("utf-8", errors="replace")
 
 
-def fetch_time_capsule_data(
-    host: str, port: int, username: str, password: str, *, include_name: bool = False
-) -> TimeCapsuleData:
-    """Fetch sensor readings and optionally the base station name over one SSH connection.
+_Reading = TypeVar("_Reading")
 
-    Blocking; run in an executor.
-    """
-    base_station_name = None
-    transport = _connect(host, port, username, password)
+
+def _read_check(
+    transport: paramiko.Transport,
+    command: str,
+    parse: Callable[[str], _Reading],
+    check: str,
+    errors: dict[str, str],
+) -> _Reading | None:
     try:
-        envstat_output = _run_command(transport, ENVSTAT_COMMAND)
-        smart_output = _run_command(transport, SMART_COMMAND)
-        df_output = _run_command(transport, DF_COMMAND)
+        return parse(_run_command(transport, command))
+    except TimeCapsuleConnectionError as err:
+        errors[check] = str(err)
+        return None
+
+
+def fetch_time_capsule_data(
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    fingerprint: str | None = None,
+    *,
+    include_name: bool = False,
+) -> TimeCapsuleData:
+    """Read all checks through one SSH transport and retain partial results."""
+    transport, actual = _connect(host, port, username, password, fingerprint)
+    errors: dict[str, str] = {}
+    base_station_name = None
+    # A stuck exec request or missing exit status can outlive a read timeout.
+    deadline = Timer(3 * CONNECT_TIMEOUT, transport.close)
+    deadline.daemon = True
+    deadline.start()
+    try:
+        readings = _read_check(
+            transport, ENVSTAT_COMMAND, parse_envstat, "environment", errors
+        )
+        smart = _read_check(
+            transport, SMART_COMMAND, parse_smart_status, "smart", errors
+        )
+        disk = _read_check(transport, DF_COMMAND, parse_df, "disk", errors)
         if include_name:
             try:
                 name = _run_command(transport, BASE_STATION_NAME_COMMAND).strip()
             except TimeCapsuleConnectionError:
-                # The name is optional on firmware where ACP is unavailable.
+                # This optional metadata must not mark any sensor check as failed.
                 pass
             else:
                 if len(name.splitlines()) == 1 and "\x00" not in name:
                     base_station_name = name
     finally:
+        deadline.cancel()
         transport.close()
 
-    envstat = {reading.key: reading for reading in parse_envstat(envstat_output)}
-    smart = parse_smart_status(smart_output)
-    disk = parse_df(df_output)
+    if not readings:
+        errors.setdefault("environment", "No temperature or fan readings returned")
+    if smart is None:
+        smart = SmartStatus(supported=None, enabled=None, attributes=())
+    if smart.status == "Unknown":
+        errors.setdefault("smart", "Incomplete or unreadable SMART report")
+    if disk is None:
+        errors.setdefault("disk", "No disk usage reading returned")
+
     return TimeCapsuleData(
-        envstat=envstat, smart=smart, disk=disk, base_station_name=base_station_name
+        envstat={reading.key: reading for reading in readings or ()},
+        smart=smart,
+        disk=disk,
+        fingerprint=actual,
+        errors=errors,
+        base_station_name=base_station_name,
     )

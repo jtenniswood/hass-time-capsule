@@ -1,104 +1,218 @@
-"""Config flow for Time Capsule Sensors.
-
-Setup and later edits both go through the same schema and the same live
-connection check (see `_async_validate`), so a saved entry always corresponds
-to a Time Capsule we've actually reached with envstat and SMART status at
-least once.
-"""
+"""Manual setup, Bonjour discovery, and connection settings."""
 
 from __future__ import annotations
 
 import logging
+import re
+from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
-from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers.selector import (
+    TextSelector,
+    TextSelectorConfig,
+    TextSelectorType,
+)
+from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
-from .client import TimeCapsuleAuthError, TimeCapsuleConnectionError, fetch_time_capsule_data
-from .const import DEFAULT_PORT, DEFAULT_USERNAME, DOMAIN
+from .client import (
+    TimeCapsuleAuthError,
+    TimeCapsuleConnectionError,
+    TimeCapsuleIdentityError,
+    fetch_time_capsule_data,
+)
+from .const import (
+    AIRPORT_TIME_CAPSULE_MODEL,
+    CONF_AIRPORT_MAC,
+    CONF_ENTITY_KEY,
+    CONF_SSH_FINGERPRINT,
+    DEFAULT_PORT,
+    DEFAULT_USERNAME,
+    DOMAIN,
+)
 
 _LOGGER = logging.getLogger(__name__)
+_CONNECTION_SCHEMA = vol.Schema(
+    {
+        vol.Required(CONF_HOST): cv.string,
+        vol.Required(CONF_USERNAME, default=DEFAULT_USERNAME): cv.string,
+        vol.Required(CONF_PORT, default=DEFAULT_PORT): cv.port,
+        vol.Required(CONF_PASSWORD): TextSelector(
+            TextSelectorConfig(type=TextSelectorType.PASSWORD)
+        ),
+    }
+)
 
 
-def _build_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
-    defaults = defaults or {}
-    return vol.Schema(
-        {
-            vol.Required(CONF_HOST, default=defaults.get(CONF_HOST, "")): cv.string,
-            vol.Required(
-                CONF_USERNAME, default=defaults.get(CONF_USERNAME, DEFAULT_USERNAME)
-            ): cv.string,
-            vol.Required(CONF_PORT, default=defaults.get(CONF_PORT, DEFAULT_PORT)): cv.port,
-            vol.Required(CONF_PASSWORD, default=defaults.get(CONF_PASSWORD, "")): cv.string,
-        }
-    )
+def _airport_mac(properties: Mapping[str, Any]) -> str | None:
+    """Read Apple's comma-separated TXT string and accept only known Time Capsules."""
+    fields = {}
+    for name, value in properties.items():
+        if not isinstance(value, str):
+            continue
+        for item in f"{name}={value}".split(","):
+            key, separator, field = item.partition("=")
+            if separator:
+                fields[key.casefold()] = field
+    mac = fields.get("wama", "")
+    if fields.get("syap") != AIRPORT_TIME_CAPSULE_MODEL:
+        return None
+    if not re.fullmatch(r"(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}", mac):
+        return None
+    return mac.replace("-", ":").lower()
 
 
-async def _async_validate(hass: HomeAssistant, data: dict[str, Any]) -> None:
-    """Try an actual fetch; raises on failure."""
-    await hass.async_add_executor_job(
-        fetch_time_capsule_data,
-        data[CONF_HOST],
-        data[CONF_PORT],
-        data[CONF_USERNAME],
-        data[CONF_PASSWORD],
-    )
+def _same_host(first: str, second: str) -> bool:
+    return first.rstrip(".").casefold() == second.rstrip(".").casefold()
+
+
+def _title_for_host(entry: config_entries.ConfigEntry, host: str) -> str:
+    """Update the address on generic titles while retaining existing names."""
+    if entry.title == f"Time Capsule ({entry.data[CONF_HOST]})":
+        return f"Time Capsule ({host})"
+    return entry.title
 
 
 class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Time Capsule Sensors."""
+    """Configure a Time Capsule and verify its identity before reusing a password."""
 
-    VERSION = 1
+    VERSION = 2
+    _discovery: ZeroconfServiceInfo | None = None
+    _mac: str | None = None
+
+    async def _async_validate(
+        self, data: Mapping[str, Any], fingerprint: str | None = None
+    ) -> str:
+        if not data[CONF_HOST]:
+            raise TimeCapsuleConnectionError("Enter a hostname or IP address")
+        result = await self.hass.async_add_executor_job(
+            fetch_time_capsule_data,
+            data[CONF_HOST],
+            data[CONF_PORT],
+            data[CONF_USERNAME],
+            data[CONF_PASSWORD],
+            fingerprint,
+        )
+        if result.fingerprint is None or not result.has_readings:
+            raise TimeCapsuleConnectionError(
+                "SSH worked but no Time Capsule readings were found"
+            )
+        return result.fingerprint
+
+    async def async_step_zeroconf(self, discovery_info: ZeroconfServiceInfo):
+        """Offer setup, or update the address of a verified Time Capsule."""
+        mac = _airport_mac(discovery_info.properties)
+        if mac is None:
+            return self.async_abort(reason="not_time_capsule")
+
+        # Reserve this discovery while the confirmation form is open.
+        await self.async_set_unique_id(f"airport:{mac}")
+        self._abort_if_unique_id_configured()
+        hosts = (
+            *discovery_info.addresses,
+            discovery_info.host,
+            discovery_info.hostname,
+        )
+        for entry in self._async_current_entries():
+            data = entry.data
+            same_address = any(_same_host(data[CONF_HOST], host) for host in hosts)
+            if data.get(CONF_AIRPORT_MAC) != mac and (
+                not same_address or CONF_AIRPORT_MAC in data
+            ):
+                continue
+
+            fingerprint = data.get(CONF_SSH_FINGERPRINT)
+            if fingerprint and (not same_address or CONF_AIRPORT_MAC not in data):
+                # Check the saved SSH key before authentication, including when the
+                # address is sourced from an unauthenticated Bonjour announcement.
+                candidate = {**data, CONF_HOST: discovery_info.host}
+                try:
+                    await self._async_validate(candidate, fingerprint)
+                except TimeCapsuleConnectionError:
+                    return self.async_abort(reason="cannot_verify_discovery")
+                if entry.data is not data:
+                    return self.async_abort(reason="already_configured")
+                updates = {CONF_AIRPORT_MAC: mac}
+                if not same_address:
+                    updates[CONF_HOST] = discovery_info.host
+                    return self.async_update_reload_and_abort(
+                        entry,
+                        title=_title_for_host(entry, discovery_info.host),
+                        data_updates=updates,
+                        reason="already_configured",
+                    )
+                self.hass.config_entries.async_update_entry(
+                    entry, data={**data, **updates}
+                )
+            return self.async_abort(reason="already_configured")
+
+        self._discovery = discovery_info
+        self._mac = mac
+        self.context["title_placeholders"] = {
+            "name": discovery_info.name.removesuffix(discovery_info.type).rstrip("."),
+        }
+        return await self.async_step_user()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
-        errors: dict[str, str] = {}
-        if user_input is not None:
-            await self.async_set_unique_id(user_input[CONF_HOST])
-            self._abort_if_unique_id_configured()
+        """Set up manually or confirm a discovered device."""
+        return await self._async_connection_step("user", user_input)
 
-            try:
-                await _async_validate(self.hass, user_input)
-            except TimeCapsuleAuthError:
-                errors["base"] = "invalid_auth"
-            except TimeCapsuleConnectionError:
-                errors["base"] = "cannot_connect"
-            except Exception:
-                _LOGGER.exception("Unexpected error validating Time Capsule connection")
-                errors["base"] = "unknown"
-            else:
-                return self.async_create_entry(
-                    title=f"Time Capsule ({user_input[CONF_HOST]})", data=user_input
-                )
-
-        return self.async_show_form(
-            step_id="user", data_schema=_build_schema(user_input), errors=errors
+    async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
+        """Change connection details without creating a new device."""
+        return await self._async_connection_step(
+            "reconfigure", user_input, self._get_reconfigure_entry()
         )
 
-    @staticmethod
-    @callback
-    def async_get_options_flow(
-        config_entry: config_entries.ConfigEntry,
-    ) -> TimeCapsuleOptionsFlow:
-        return TimeCapsuleOptionsFlow(config_entry)
+    async def async_step_reauth(self, entry_data: Mapping[str, Any]):
+        """Ask for new credentials when SSH authentication fails."""
+        return await self.async_step_reauth_confirm()
 
+    async def async_step_reauth_confirm(self, user_input: dict[str, Any] | None = None):
+        """Check replacement credentials against the saved SSH key."""
+        return await self._async_connection_step(
+            "reauth_confirm", user_input, self._get_reauth_entry()
+        )
 
-class TimeCapsuleOptionsFlow(config_entries.OptionsFlow):
-    """Edit an existing entry's connection details (host, user, port, password)."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self._entry = config_entry
-
-    async def async_step_init(self, user_input: dict[str, Any] | None = None):
+    async def _async_connection_step(
+        self,
+        step: str,
+        user_input: dict[str, Any] | None,
+        entry: config_entries.ConfigEntry | None = None,
+    ):
         errors: dict[str, str] = {}
-        current = user_input or self._entry.data
-
+        current = dict(entry.data) if entry else {}
+        if self._discovery:
+            current.setdefault(CONF_HOST, self._discovery.host)
+        schema = _CONNECTION_SCHEMA
+        if step == "reauth_confirm":
+            schema = vol.Schema(
+                {
+                    vol.Required(CONF_USERNAME): cv.string,
+                    vol.Required(CONF_PASSWORD): TextSelector(
+                        TextSelectorConfig(type=TextSelectorType.PASSWORD)
+                    ),
+                }
+            )
         if user_input is not None:
+            data = {**current, **user_input}
+            data[CONF_HOST] = data[CONF_HOST].strip()
+            candidates = [
+                other for other in self._async_current_entries() if other is not entry
+            ]
+            if any(
+                _same_host(other.data[CONF_HOST], data[CONF_HOST])
+                for other in candidates
+            ):
+                return self.async_abort(reason="already_configured")
             try:
-                await _async_validate(self.hass, user_input)
+                fingerprint = await self._async_validate(
+                    data, data.get(CONF_SSH_FINGERPRINT)
+                )
+            except TimeCapsuleIdentityError:
+                errors["base"] = "device_changed"
             except TimeCapsuleAuthError:
                 errors["base"] = "invalid_auth"
             except TimeCapsuleConnectionError:
@@ -107,17 +221,39 @@ class TimeCapsuleOptionsFlow(config_entries.OptionsFlow):
                 _LOGGER.exception("Unexpected error validating Time Capsule connection")
                 errors["base"] = "unknown"
             else:
-                title = self._entry.title
-                if user_input[CONF_HOST] != self._entry.data[CONF_HOST]:
-                    title = f"Time Capsule ({user_input[CONF_HOST]})"
-                self.hass.config_entries.async_update_entry(
-                    self._entry, data=user_input, title=title
+                await self.async_set_unique_id(
+                    fingerprint, raise_on_progress=entry is None
                 )
-                # Data (not options) holds the connection details, and
-                # async_update_entry above already triggers the listener that
-                # reloads the entry -- nothing further to store here.
-                return self.async_create_entry(title="", data={})
-
+                discovered = self._discovery is not None and _same_host(
+                    data[CONF_HOST], self._discovery.host
+                )
+                for other in candidates:
+                    if other.data.get(CONF_SSH_FINGERPRINT) == fingerprint:
+                        if (
+                            discovered
+                            and self._mac
+                            and CONF_AIRPORT_MAC not in other.data
+                        ):
+                            self.hass.config_entries.async_update_entry(
+                                other, data={**other.data, CONF_AIRPORT_MAC: self._mac}
+                            )
+                        return self.async_abort(reason="already_configured")
+                data[CONF_SSH_FINGERPRINT] = fingerprint
+                if entry:
+                    return self.async_update_reload_and_abort(
+                        entry, title=_title_for_host(entry, data[CONF_HOST]), data=data
+                    )
+                self._abort_if_unique_id_configured()
+                data[CONF_ENTITY_KEY] = fingerprint
+                if self._mac and discovered:
+                    data[CONF_AIRPORT_MAC] = self._mac
+                return self.async_create_entry(
+                    title=f"Time Capsule ({data[CONF_HOST]})", data=data
+                )
+            current = data
+        current.pop(CONF_PASSWORD, None)
         return self.async_show_form(
-            step_id="init", data_schema=_build_schema(current), errors=errors
+            step_id=step,
+            data_schema=self.add_suggested_values_to_schema(schema, current),
+            errors=errors,
         )

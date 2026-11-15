@@ -1,102 +1,146 @@
-"""The Time Capsule Sensors integration.
-
-Config-entry based (see config_flow.py) -- one entry per Time Capsule, each
-backed by a single coordinator shared by all of its sensors so envstat and
-SMART status are only fetched once per poll regardless of how many readings
-they produce between them.
-"""
+"""Poll each Time Capsule over one shared SSH connection."""
 
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from functools import partial
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, Platform
+from homeassistant.const import (
+    CONF_HOST,
+    CONF_PASSWORD,
+    CONF_PORT,
+    CONF_USERNAME,
+    Platform,
+)
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util.dt import utcnow
 
-from .client import TimeCapsuleConnectionError, TimeCapsuleData, fetch_time_capsule_data
-from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
+from .client import (
+    TimeCapsuleAuthError,
+    TimeCapsuleConnectionError,
+    TimeCapsuleData,
+    fetch_time_capsule_data,
+)
+from .const import CONF_ENTITY_KEY, CONF_SSH_FINGERPRINT, DEFAULT_SCAN_INTERVAL, DOMAIN
+from .smart import SmartStatus
 
 _LOGGER = logging.getLogger(__name__)
+PLATFORMS = [Platform.SENSOR, Platform.BINARY_SENSOR]
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
 
+class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
+    """Poll the Capsule and remember when each check last returned usable data."""
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up a Time Capsule entry: create its coordinator and load sensor.py."""
-    host = entry.data[CONF_HOST]
-    port = entry.data[CONF_PORT]
-    username = entry.data[CONF_USERNAME]
-    password = entry.data[CONF_PASSWORD]
-    include_name = True
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN} ({entry.data[CONF_HOST]})",
+            update_interval=DEFAULT_SCAN_INTERVAL,
+        )
+        self.entry = entry
+        self.last_success: dict[str, datetime] = {}
+        self._read_name = True
 
-    async def _async_update() -> TimeCapsuleData:
+    async def _async_update_data(self) -> TimeCapsuleData:
+        data = self.entry.data
         try:
-            return await hass.async_add_executor_job(
+            result = await self.hass.async_add_executor_job(
                 partial(
                     fetch_time_capsule_data,
-                    host,
-                    port,
-                    username,
-                    password,
-                    include_name=include_name,
+                    data[CONF_HOST],
+                    data[CONF_PORT],
+                    data[CONF_USERNAME],
+                    data[CONF_PASSWORD],
+                    data.get(CONF_SSH_FINGERPRINT),
+                    include_name=self._read_name,
                 )
             )
+        except TimeCapsuleAuthError as err:
+            raise ConfigEntryAuthFailed from err
         except TimeCapsuleConnectionError as err:
+            if self.data is None:
+                # Install diagnostic entities even when HA starts while the Capsule is offline.
+                return TimeCapsuleData(
+                    envstat={},
+                    smart=SmartStatus(None, None, ()),
+                    disk=None,
+                    fingerprint=None,
+                    errors={},
+                    connected=False,
+                )
             raise UpdateFailed(str(err)) from err
 
-    coordinator: DataUpdateCoordinator[TimeCapsuleData] = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name=f"{DOMAIN} ({host})",
-        update_method=_async_update,
-        update_interval=DEFAULT_SCAN_INTERVAL,
-    )
-    await coordinator.async_config_entry_first_refresh()
-    include_name = False
+        if self.entry.data is data:
+            if self._read_name and result.connected:
+                self._read_name = False
+                _async_register_device(self.hass, self.entry, result.base_station_name)
+            if CONF_SSH_FINGERPRINT not in data and result.has_readings:
+                self.hass.config_entries.async_update_entry(
+                    self.entry, data={**data, CONF_SSH_FINGERPRINT: result.fingerprint}
+                )
 
+        now = utcnow()
+        for check in result.successful_checks:
+            self.last_success[check] = now
+        return result
+
+
+def _async_register_device(
+    hass: HomeAssistant, entry: ConfigEntry, base_station_name: str | None
+) -> None:
+    """Register the stable device and apply any name read from AirPort Utility."""
     registry = dr.async_get(hass)
-    identifiers = {(DOMAIN, host)}
+    identifier = (DOMAIN, entry.data[CONF_ENTITY_KEY])
     previous_name = next(
         (
             device.name
             for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
-            if (DOMAIN, host) in device.identifiers
+            if identifier in device.identifiers
         ),
         None,
     )
-    base_station_name = coordinator.data.base_station_name
-
-    # Replace automatic titles while respecting titles chosen in Home Assistant.
-    if base_station_name and entry.title in (f"Time Capsule ({host})", previous_name):
+    generic_title = f"Time Capsule ({entry.data[CONF_HOST]})"
+    if base_station_name and entry.title in (generic_title, previous_name):
         hass.config_entries.async_update_entry(entry, title=base_station_name)
 
     registry.async_get_or_create(
         config_entry_id=entry.entry_id,
-        identifiers=identifiers,
+        identifiers={identifier},
         name=base_station_name or previous_name or "Time Capsule",
         manufacturer="Apple",
         model="Apple Time Capsule",
     )
 
-    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Freeze the identity used by existing devices, automations and history."""
+    if entry.version == 1:
+        hass.config_entries.async_update_entry(
+            entry,
+            version=2,
+            data={**entry.data, CONF_ENTITY_KEY: entry.data[CONF_HOST]},
+        )
+    return entry.version == 2
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Set up one coordinator and its entities."""
+    coordinator = TimeCapsuleCoordinator(hass, entry)
+    await coordinator.async_config_entry_first_refresh()
+    if not coordinator.data.connected:
+        _async_register_device(hass, entry, None)
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a Time Capsule entry."""
-    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if unloaded:
-        hass.data[DOMAIN].pop(entry.entry_id)
-    return unloaded
-
-
-async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload after the options flow updates connection details."""
-    await hass.config_entries.async_reload(entry.entry_id)
+    """Unload this Time Capsule."""
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

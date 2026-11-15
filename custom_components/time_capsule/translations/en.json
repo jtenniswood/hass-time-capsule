@@ -3,11 +3,28 @@
     "step": {
       "user": {
         "title": "Connect to Time Capsule",
-        "description": "SSH connection details for the modded Time Capsule running envstat.",
+        "description": "Enter the SSH connection details for your Time Capsule.",
         "data": {
           "host": "Host",
           "username": "Username",
           "port": "Port",
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Change Time Capsule connection",
+        "description": "Enter the address and SSH credentials for this Time Capsule.",
+        "data": {
+          "host": "Host",
+          "username": "Username",
+          "port": "Port",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Update Time Capsule credentials",
+        "data": {
+          "username": "Username",
           "password": "Password"
         }
       }
@@ -15,28 +32,14 @@
     "error": {
       "cannot_connect": "Failed to connect. Check the host and port, and that the device is reachable.",
       "invalid_auth": "Authentication failed. Check the username and password.",
-      "unknown": "Unexpected error."
+      "unknown": "Unexpected error.",
+      "device_changed": "The SSH identity changed. Check that this address still belongs to your Time Capsule."
     },
     "abort": {
-      "already_configured": "This Time Capsule is already configured."
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Time Capsule connection settings",
-        "data": {
-          "host": "Host",
-          "username": "Username",
-          "port": "Port",
-          "password": "Password"
-        }
-      }
+      "already_configured": "This Time Capsule is already configured.",
+      "not_time_capsule": "This AirPort is not a supported Time Capsule model.",
+      "cannot_verify_discovery": "The discovered address could not be verified against the saved Time Capsule."
     },
-    "error": {
-      "cannot_connect": "Failed to connect. Check the host and port, and that the device is reachable.",
-      "invalid_auth": "Authentication failed. Check the username and password.",
-      "unknown": "Unexpected error."
-    }
+    "flow_title": "{name}"
   }
 }
