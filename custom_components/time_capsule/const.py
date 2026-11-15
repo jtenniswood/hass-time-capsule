@@ -1,4 +1,4 @@
-"""Constants for the Time Capsule Sensors integration."""
+"""Constants for the Apple Time Capsule integration."""
 
 from __future__ import annotations
 
