@@ -17,7 +17,7 @@ except ModuleNotFoundError as err:
     ) from err
 
 from homeassistant import loader
-from homeassistant.config_entries import ConfigEntry, ConfigEntryState
+from homeassistant.config_entries import ConfigEntry, ConfigEntryDisabler, ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -37,9 +37,16 @@ from custom_components.time_capsule.const import (
     DF_COMMAND,
     DOMAIN,
     ENVSTAT_COMMAND,
+    MOUNT_COMMAND,
+    CONF_MONITOR_SMB,
+    CONF_SMB_SHARE,
+    CONF_SMB_USERNAME,
+    CONF_SMB_PASSWORD,
     SMART_COMMAND,
 )
-from custom_components.time_capsule.df import parse_df
+from custom_components.time_capsule.df import is_volume_mounted, parse_df
+from custom_components.time_capsule.diagnostics import async_get_config_entry_diagnostics
+from custom_components.time_capsule.smb import SmbStatus
 from custom_components.time_capsule.envstat import parse_envstat
 from custom_components.time_capsule.smart import parse_smart_status
 
@@ -56,6 +63,7 @@ def poll_result(*, no_disk=False):
         smart=parse_smart_status(SMART),
         disk=None if no_disk else parse_df(DF),
         fingerprint=FINGERPRINT,
+        volume_mounted=not no_disk,
         errors={"disk": "Disk offline"} if no_disk else {},
     )
 
@@ -81,6 +89,8 @@ class TestPolling(unittest.TestCase):
         def run_command(_, command):
             if command == DF_COMMAND:
                 raise TimeCapsuleConnectionError("Disk offline")
+            if command == MOUNT_COMMAND:
+                return "/dev/md0a on / type ffs (local)"
             if command == BASE_STATION_NAME_COMMAND:
                 raise TimeCapsuleConnectionError("ACP unavailable")
             return outcomes[command]
@@ -98,11 +108,41 @@ class TestPolling(unittest.TestCase):
             result = fetch_time_capsule_data(**CONNECTION, include_name=True)
 
         self.assertIsNone(result.base_station_name)
+        self.assertIs(result.volume_mounted, False)
         self.assertEqual(set(result.errors), {"disk"})
         self.assertEqual(result.successful_checks, {"environment", "smart"})
         self.assertEqual(result.smart.status, "Passed")
         self.assertEqual(len(result.envstat), 1)
         transport.close.assert_called_once()
+
+    def test_smart_failure_verdict_survives_command_error(self):
+        from custom_components.time_capsule.client import _run_command
+
+        transport = MagicMock()
+        channel = transport.open_session.return_value.__enter__.return_value
+        channel.recv_exit_status.return_value = 1
+
+        channel.recv.side_effect = [b"Threshold exceeds condition\n", b""]
+        self.assertEqual(
+            parse_smart_status(_run_command(transport, SMART_COMMAND)).status,
+            "Failed",
+        )
+
+        channel.recv.side_effect = [SMART.encode(), b""]
+        with self.assertRaises(TimeCapsuleConnectionError):
+            _run_command(transport, SMART_COMMAND)
+
+    def test_mount_output_distinguishes_missing_and_unreadable(self):
+        listing = "/dev/md0a on / type ffs (local)\n"
+        self.assertIs(is_volume_mounted(listing, "/dev/dk2"), False)
+        self.assertIs(
+            is_volume_mounted(
+                listing + "/dev/dk2 on /Volumes/Backup Data type hfs (local)",
+                "/dev/dk2",
+            ),
+            True,
+        )
+        self.assertIsNone(is_volume_mounted("mount: permission denied", "/dev/dk2"))
 
     def test_changed_ssh_key_is_rejected_before_password_is_sent(self):
         from custom_components.time_capsule.client import _connect
@@ -138,20 +178,32 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         await async_from_config_dict({"homeassistant": {}}, self.hass)
         self.addAsyncCleanup(self.hass.async_stop, force=True)
 
-    async def async_add_legacy_entry(self):
+    async def async_add_legacy_entry(self, *, version=1, sensors=()):
         entry = ConfigEntry(
             domain=DOMAIN,
             title=f"Time Capsule ({CONNECTION['host']})",
-            data=CONNECTION,
+            data=(
+                CONNECTION if version == 1
+                else {**CONNECTION, CONF_ENTITY_KEY: CONNECTION["host"]}
+            ),
             options={},
             source="user",
-            version=1,
+            version=version,
             minor_version=1,
             unique_id=CONNECTION["host"],
             discovery_keys={},
             subentries_data=None,
+            disabled_by=ConfigEntryDisabler.USER if sensors else None,
         )
         await self.hass.config_entries.async_add(entry)
+        registry = er.async_get(self.hass)
+        for platform, suffix, attributes in sensors:
+            registry.async_get_or_create(
+                platform, DOMAIN, f"{DOMAIN}_{CONNECTION['host']}_{suffix}",
+                config_entry=entry, **attributes,
+            )
+        if sensors:
+            await self.hass.config_entries.async_set_disabled_by(entry.entry_id, None)
         await self.hass.async_block_till_done()
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
         return entry
@@ -205,17 +257,17 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         ) as fetch:
             entry = await self.async_add_legacy_entry()
             key = CONNECTION["host"]
-            connected = self.entity_id("binary_sensor", key, "ssh_connected")
+            mounted = self.entity_id("binary_sensor", key, "volume_mounted")
             last = self.entity_id("sensor", key, "last_reading")
             disk = self.entity_id("sensor", key, "disk_free")
-            self.assertEqual(self.hass.states.get(connected).state, "off")
+            self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
             registry = dr.async_get(self.hass)
             (device,) = dr.async_entries_for_config_entry(registry, entry.entry_id)
             registry.async_update_device(device.id, name_by_user="My Capsule")
 
             await entry.runtime_data.async_refresh()
             await self.hass.async_block_till_done()
-            self.assertEqual(self.hass.states.get(connected).state, "on")
+            self.assertEqual(self.hass.states.get(mounted).state, "off")
             self.assertTrue(fetch.call_args.kwargs["include_name"])
             self.assertEqual(entry.title, "Time Capsule Media")
             self.assertEqual(registry.async_get(device.id).name, entry.title)
@@ -233,21 +285,157 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             last_value = self.hass.states.get(last).state
             self.assertNotEqual(self.hass.states.get(disk).state, "unavailable")
             await entry.runtime_data.async_refresh()
-            self.assertEqual(self.hass.states.get(connected).state, "off")
+            self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
             self.assertEqual(self.hass.states.get(disk).state, "unavailable")
             self.assertEqual(self.hass.states.get(last).state, last_value)
+
+    async def test_sensor_upgrade_keeps_the_ten_health_readings(self):
+        key = CONNECTION["host"]
+        attributes = {
+            1: ("Raw read error rate", 120779000),
+            5: ("Reallocated sector count", 0),
+            9: ("Power-on hours count", 16363),
+            10: ("Spin retry count", 0),
+            12: ("Device power cycle count", 4236),
+            184: ("Unknown", 0),
+            187: ("Reported uncorrect", 0),
+            190: ("Airflow Temperature", 52),
+            194: ("Temperature", 49),
+            197: ("Current pending sector", 0),
+            198: ("Offline uncorrectable", 0),
+            199: ("Ultra DMA CRC error count", 0),
+        }
+
+        def smart_without(*excluded):
+            rows = [
+                f"{attr_id} 100 0 no online positive {label} {raw}"
+                for attr_id, (label, raw) in attributes.items()
+                if attr_id not in excluded
+            ]
+            return parse_smart_status("\n".join(["SMART supported, SMART enabled", *rows]))
+
+        full = replace(poll_result(), smart=smart_without())
+        legacy_sensors = (
+            ("binary_sensor", "ssh_connected", {}),
+            ("sensor", "smart_1", {}),
+            ("sensor", "smart_184", {}),
+            ("sensor", "smart_190", {"original_device_class": "temperature"}),
+            ("sensor", "tsensor0_T_internal", {"original_device_class": "temperature"}),
+            ("sensor", "smart_194", {"suggested_object_id": "my_drive_temp"}),
+            ("sensor", "smart_9", {
+                "suggested_object_id": "my_drive_runtime",
+                "original_device_class": "duration",
+                "unit_of_measurement": "h",
+            }),
+        )
+        with patch(
+            "custom_components.time_capsule.fetch_time_capsule_data",
+            side_effect=[
+                full,
+                replace(full, smart=smart_without(194)),
+                replace(full, smart=smart_without(190, 194)),
+            ],
+        ):
+            entry = await self.async_add_legacy_entry(version=2, sensors=legacy_sensors)
+            self.assertEqual(entry.minor_version, 2)
+            registry = er.async_get(self.hass)
+            entity_keys = {
+                entity.unique_id.removeprefix(f"{DOMAIN}_{key}_")
+                for entity in er.async_entries_for_config_entry(registry, entry.entry_id)
+            }
+            self.assertEqual(entity_keys, {
+                "smart_5", "smart_9", "smart_10", "smart_12", "smart_187",
+                "smart_194", "smart_197", "smart_198", "smart_199", "last_reading",
+                "smart_status", "volume_mounted", "disk_free", "disk_used",
+                "disk_total", "disk_percent", "disk_free_percent",
+            })
+
+            runtime = self.hass.states.get("sensor.my_drive_runtime")
+            self.assertEqual(runtime.attributes["unit_of_measurement"], "d")
+            self.assertAlmostEqual(float(runtime.state), 16363 / 24)
+
+            temperature = "sensor.my_drive_temp"
+            self.assertEqual(float(self.hass.states.get(temperature).state), 49)
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(float(self.hass.states.get(temperature).state), 52)
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(float(self.hass.states.get(temperature).state), 45.32)
+
+    async def test_smb_and_mount_checks_and_diagnostics(self):
+        with (
+            patch(
+                "custom_components.time_capsule.fetch_time_capsule_data",
+                side_effect=[
+                    poll_result(),
+                    poll_result(no_disk=True),  # SSH works while the volume and SMB fail.
+                    TimeCapsuleConnectionError("offline"),  # SMB can recover first.
+                    poll_result(),
+                ],
+            ),
+            patch(
+                "custom_components.time_capsule.probe_smb",
+                side_effect=[SmbStatus(False, False), SmbStatus(True, True), SmbStatus(True, True)],
+            ) as probe,
+        ):
+            entry = await self.async_add_legacy_entry()
+            key = CONNECTION["host"]
+            mounted = self.entity_id("binary_sensor", key, "volume_mounted")
+            self.assertEqual(self.hass.states.get(mounted).state, "on")
+            probe.assert_not_called()
+
+            flows = self.hass.config_entries.options
+            flow = await flows.async_init(entry.entry_id)
+            data = {
+                CONF_MONITOR_SMB: True,
+                CONF_SMB_SHARE: "Backup Data",
+                CONF_SMB_USERNAME: "smb-test-account",
+                CONF_SMB_PASSWORD: "smb-test-password",
+            }
+            result = await flows.async_configure(flow["flow_id"], data)
+            self.assertEqual(result["data"], data)
+            await self.hass.async_block_till_done()
+            probe.assert_called_with(CONNECTION["host"], "Backup Data", "smb-test-account", "smb-test-password")
+            port = self.entity_id("binary_sensor", key, "smb_port_open")
+            share = self.entity_id("binary_sensor", key, "smb_share_accessible")
+            self.assertEqual(self.hass.states.get(mounted).state, "off")
+            self.assertEqual(self.hass.states.get(port).state, "off")
+            self.assertEqual(self.hass.states.get(share).state, "off")
+
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(self.hass.states.get(mounted).state, "unavailable")
+            self.assertEqual(self.hass.states.get(share).state, "on")
+
+            await entry.runtime_data.async_refresh()
+            self.assertEqual(self.hass.states.get(mounted).state, "on")
+
+            diagnostics = await async_get_config_entry_diagnostics(self.hass, entry)
+            self.assertTrue(diagnostics["checks"]["smb"]["share_accessible"])
+            for secret in (CONNECTION["host"], FINGERPRINT, *list(data.values())[1:]):
+                self.assertNotIn(secret, str(diagnostics))
+
+    async def test_user_setup_offers_manual_connection_from_the_discovery_menu(self):
+        flows = self.hass.config_entries.flow
+        flow = await flows.async_init(DOMAIN, context={"source": "user"})
+        self.assertEqual(flow["type"], "menu")
+        self.assertEqual(flow["step_id"], "user")
+        self.assertEqual(flow["menu_options"], ["connect"])
+
+        form = await flows.async_configure(flow["flow_id"], {"next_step_id": "connect"})
+        self.assertEqual(form["type"], "form")
+        self.assertEqual(form["step_id"], "connect")
+        self.assertEqual(
+            set(form["data_schema"].schema), {"host", "username", "port", "password"}
+        )
 
     async def test_discovery_confirms_ssh_credentials_and_sets_up_one_entry(self):
         flows = self.hass.config_entries.flow
         flow = await flows.async_init(
             DOMAIN, context={"source": "zeroconf"}, data=discovery(CONNECTION["host"])
         )
-        self.assertEqual(flow["step_id"], "user")
+        self.assertEqual(flow["step_id"], "connect")
         host_field = next(key for key in flow["data_schema"].schema if key == "host")
-        self.assertEqual(
-            host_field.description["suggested_value"],
-            CONNECTION["host"],
-        )
+        host = host_field.description["suggested_value"]
+        self.assertEqual(host, "Time-Capsule-Test.local")
 
         with (
             patch(
@@ -259,13 +447,23 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
                 return_value=poll_result(),
             ),
         ):
-            result = await flows.async_configure(flow["flow_id"], CONNECTION)
+            result = await flows.async_configure(
+                flow["flow_id"], {**CONNECTION, "host": host}
+            )
             await self.hass.async_block_till_done()
         entry = result["result"]
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
+        self.assertEqual(entry.data["host"], host)
         self.assertEqual(entry.data[CONF_AIRPORT_MAC], "02:00:00:00:00:01")
         self.assertEqual(entry.unique_id, FINGERPRINT)
         self.assertEqual(len(self.hass.config_entries.async_entries(DOMAIN)), 1)
+
+    async def test_discovery_suggests_ip_without_a_hostname(self):
+        flows = self.hass.config_entries.flow
+        info = replace(discovery(CONNECTION["host"]), hostname="")
+        flow = await flows.async_init(DOMAIN, context={"source": "zeroconf"}, data=info)
+        host_field = next(key for key in flow["data_schema"].schema if key == "host")
+        self.assertEqual(host_field.description["suggested_value"], CONNECTION["host"])
 
     async def test_last_reading_is_restored_when_reloaded_offline(self):
         with patch(

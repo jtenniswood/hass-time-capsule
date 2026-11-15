@@ -10,6 +10,7 @@ from typing import Any
 import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME
+from homeassistant.core import callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.selector import (
     TextSelector,
@@ -28,6 +29,10 @@ from .const import (
     AIRPORT_TIME_CAPSULE_MODEL,
     CONF_AIRPORT_MAC,
     CONF_ENTITY_KEY,
+    CONF_MONITOR_SMB,
+    CONF_SMB_PASSWORD,
+    CONF_SMB_SHARE,
+    CONF_SMB_USERNAME,
     CONF_SSH_FINGERPRINT,
     DEFAULT_PORT,
     DEFAULT_USERNAME,
@@ -69,6 +74,13 @@ def _same_host(first: str, second: str) -> bool:
     return first.rstrip(".").casefold() == second.rstrip(".").casefold()
 
 
+def _matches_discovery(host: str, discovery: ZeroconfServiceInfo) -> bool:
+    return any(
+        _same_host(host, address)
+        for address in (discovery.hostname, discovery.host, *discovery.addresses)
+    )
+
+
 def _title_for_host(entry: config_entries.ConfigEntry, host: str) -> str:
     """Update the address on generic titles while retaining existing names."""
     if entry.title == f"Time Capsule ({entry.data[CONF_HOST]})":
@@ -80,8 +92,14 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure a Time Capsule and verify its identity before reusing a password."""
 
     VERSION = 2
+    MINOR_VERSION = 2
     _discovery: ZeroconfServiceInfo | None = None
     _mac: str | None = None
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry):
+        return TimeCapsuleOptionsFlow()
 
     async def _async_validate(
         self, data: Mapping[str, Any], fingerprint: str | None = None
@@ -111,14 +129,9 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Reserve this discovery while the confirmation form is open.
         await self.async_set_unique_id(f"airport:{mac}")
         self._abort_if_unique_id_configured()
-        hosts = (
-            *discovery_info.addresses,
-            discovery_info.host,
-            discovery_info.hostname,
-        )
         for entry in self._async_current_entries():
             data = entry.data
-            same_address = any(_same_host(data[CONF_HOST], host) for host in hosts)
+            same_address = _matches_discovery(data[CONF_HOST], discovery_info)
             if data.get(CONF_AIRPORT_MAC) != mac and (
                 not same_address or CONF_AIRPORT_MAC in data
             ):
@@ -154,11 +167,15 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {
             "name": discovery_info.name.removesuffix(discovery_info.type).rstrip("."),
         }
-        return await self.async_step_user()
+        return await self.async_step_connect()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        """Point users to the discovery dashboard before entering an address."""
+        return self.async_show_menu(step_id="user", menu_options=["connect"])
+
+    async def async_step_connect(self, user_input: dict[str, Any] | None = None):
         """Set up manually or confirm a discovered device."""
-        return await self._async_connection_step("user", user_input)
+        return await self._async_connection_step("connect", user_input)
 
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
         """Change connection details without creating a new device."""
@@ -185,7 +202,9 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         current = dict(entry.data) if entry else {}
         if self._discovery:
-            current.setdefault(CONF_HOST, self._discovery.host)
+            current.setdefault(
+                CONF_HOST, self._discovery.hostname.rstrip(".") or self._discovery.host
+            )
         schema = _CONNECTION_SCHEMA
         if step == "reauth_confirm":
             schema = vol.Schema(
@@ -224,8 +243,8 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(
                     fingerprint, raise_on_progress=entry is None
                 )
-                discovered = self._discovery is not None and _same_host(
-                    data[CONF_HOST], self._discovery.host
+                discovered = self._discovery is not None and _matches_discovery(
+                    data[CONF_HOST], self._discovery
                 )
                 for other in candidates:
                     if other.data.get(CONF_SSH_FINGERPRINT) == fingerprint:
@@ -255,5 +274,56 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return self.async_show_form(
             step_id=step,
             data_schema=self.add_suggested_values_to_schema(schema, current),
+            errors=errors,
+        )
+
+
+class TimeCapsuleOptionsFlow(config_entries.OptionsFlowWithReload):
+    """Enable the optional SMB checks and set separate share credentials."""
+
+    async def async_step_init(self, user_input=None):
+        errors = {}
+        if user_input is not None:
+            if not user_input[CONF_MONITOR_SMB]:
+                return self.async_create_entry(data={})
+
+            share = user_input.get(CONF_SMB_SHARE, "").strip()
+            username = user_input.get(CONF_SMB_USERNAME, "").strip()
+            password = user_input.get(CONF_SMB_PASSWORD, "")
+            saved = self.config_entry.options
+            if (share, username) == (
+                saved.get(CONF_SMB_SHARE),
+                saved.get(CONF_SMB_USERNAME),
+            ) and not password:
+                password = saved.get(CONF_SMB_PASSWORD, "")
+            if any(char in share for char in ("/", "\\", "\x00")) or share in (".", ".."):
+                errors[CONF_SMB_SHARE] = "invalid_share"
+            elif bool(share) != bool(username and password) or (
+                not share and (username or password)
+            ):
+                errors["base"] = "incomplete_share"
+            else:
+                return self.async_create_entry(data={
+                    CONF_MONITOR_SMB: True,
+                    CONF_SMB_SHARE: share,
+                    CONF_SMB_USERNAME: username,
+                    CONF_SMB_PASSWORD: password,
+                })
+
+        saved = self.config_entry.options
+        defaults = dict(user_input if user_input is not None else saved)
+        # A blank password on an existing share keeps the saved password.
+        defaults.pop(CONF_SMB_PASSWORD, None)
+        schema = vol.Schema({
+            vol.Required(CONF_MONITOR_SMB, default=False): cv.boolean,
+            vol.Optional(CONF_SMB_SHARE): cv.string,
+            vol.Optional(CONF_SMB_USERNAME): cv.string,
+            vol.Optional(CONF_SMB_PASSWORD): TextSelector(
+                TextSelectorConfig(type=TextSelectorType.PASSWORD)
+            ),
+        })
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, defaults),
             errors=errors,
         )
