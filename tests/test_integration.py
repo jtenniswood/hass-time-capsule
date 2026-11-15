@@ -104,6 +104,23 @@ class TestPolling(unittest.TestCase):
         self.assertEqual(len(result.envstat), 1)
         transport.close.assert_called_once()
 
+    def test_smart_failure_verdict_survives_command_error(self):
+        from custom_components.time_capsule.client import _run_command
+
+        transport = MagicMock()
+        channel = transport.open_session.return_value.__enter__.return_value
+        channel.recv_exit_status.return_value = 1
+
+        channel.recv.side_effect = [b"Threshold exceeds condition\n", b""]
+        self.assertEqual(
+            parse_smart_status(_run_command(transport, SMART_COMMAND)).status,
+            "Failed",
+        )
+
+        channel.recv.side_effect = [SMART.encode(), b""]
+        with self.assertRaises(TimeCapsuleConnectionError):
+            _run_command(transport, SMART_COMMAND)
+
     def test_changed_ssh_key_is_rejected_before_password_is_sent(self):
         from custom_components.time_capsule.client import _connect
 

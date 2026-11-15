@@ -123,12 +123,16 @@ def _run_command(transport: paramiko.Transport, command: str) -> str:
     except (paramiko.SSHException, OSError, EOFError) as err:
         raise TimeCapsuleConnectionError(f"'{command}' failed: {err}") from err
 
-    if exit_status != 0:
+    output = b"".join(chunks).decode("utf-8", errors="replace")
+    # atactl can report the drive's verdict before failing to read its table.
+    if exit_status != 0 and not (
+        command == SMART_COMMAND and parse_smart_status(output).threshold_exceeded
+    ):
         raise TimeCapsuleConnectionError(
             f"'{command}' exited with status {exit_status}"
         )
 
-    return b"".join(chunks).decode("utf-8", errors="replace")
+    return output
 
 
 _Reading = TypeVar("_Reading")
