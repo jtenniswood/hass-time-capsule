@@ -228,8 +228,8 @@ class TimeCapsuleDiskSensor(_TimeCapsuleEntity, SensorEntity):
         else:
             self._attr_device_class = SensorDeviceClass.DATA_SIZE
             self._attr_native_unit_of_measurement = UnitOfInformation.BYTES
-            self._attr_suggested_unit_of_measurement = UnitOfInformation.GIGABYTES
-            self._attr_suggested_display_precision = 2
+            self._attr_suggested_unit_of_measurement = UnitOfInformation.TERABYTES
+            self._attr_suggested_display_precision = 1
 
     @property
     def available(self) -> bool:
