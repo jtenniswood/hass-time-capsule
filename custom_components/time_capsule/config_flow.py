@@ -137,8 +137,11 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ):
                 continue
 
+            update_host = not same_address or _same_host(
+                data[CONF_HOST], discovery_info.hostname
+            )
             fingerprint = data.get(CONF_SSH_FINGERPRINT)
-            if fingerprint and (not same_address or CONF_AIRPORT_MAC not in data):
+            if fingerprint and (update_host or CONF_AIRPORT_MAC not in data):
                 # Check the saved SSH key before authentication, including when the
                 # address is sourced from an unauthenticated Bonjour announcement.
                 candidate = {**data, CONF_HOST: discovery_info.host}
@@ -149,7 +152,7 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if entry.data is not data:
                     return self.async_abort(reason="already_configured")
                 updates = {CONF_AIRPORT_MAC: mac}
-                if not same_address:
+                if update_host:
                     updates[CONF_HOST] = discovery_info.host
                     return self.async_update_reload_and_abort(
                         entry,
@@ -202,9 +205,7 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         current = dict(entry.data) if entry else {}
         if self._discovery:
-            current.setdefault(
-                CONF_HOST, self._discovery.hostname.rstrip(".") or self._discovery.host
-            )
+            current.setdefault(CONF_HOST, self._discovery.host)
         schema = _CONNECTION_SCHEMA
         if step == "reauth_confirm":
             schema = vol.Schema(

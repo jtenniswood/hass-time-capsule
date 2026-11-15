@@ -65,8 +65,7 @@ Copy the whole `custom_components/time_capsule` folder into Home Assistant's
    **Add integration → Time Capsule Sensors → Enter address manually**.
 2. Enter the Time Capsule's hostname or IP address, SSH username (default
    `root`), SSH port (default `22`), and base station admin password.
-   Bonjour discovery suggests the local hostname when available. You can
-   enter the IP address if Home Assistant can't resolve that name.
+   Bonjour discovery fills in the Time Capsule's IP address.
 3. Submit the form. Home Assistant checks the SSH login and runs the sensor
    commands before it saves the connection.
 
