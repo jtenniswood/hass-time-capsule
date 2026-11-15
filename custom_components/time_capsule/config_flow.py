@@ -166,11 +166,15 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self.context["title_placeholders"] = {
             "name": discovery_info.name.removesuffix(discovery_info.type).rstrip("."),
         }
-        return await self.async_step_user()
+        return await self.async_step_connect()
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None):
+        """Point users to the discovery dashboard before entering an address."""
+        return self.async_show_menu(step_id="user", menu_options=["connect"])
+
+    async def async_step_connect(self, user_input: dict[str, Any] | None = None):
         """Set up manually or confirm a discovered device."""
-        return await self._async_connection_step("user", user_input)
+        return await self._async_connection_step("connect", user_input)
 
     async def async_step_reconfigure(self, user_input: dict[str, Any] | None = None):
         """Change connection details without creating a new device."""

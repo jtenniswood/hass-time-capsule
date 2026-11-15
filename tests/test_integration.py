@@ -333,12 +333,26 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             for secret in (CONNECTION["host"], FINGERPRINT, *list(data.values())[1:]):
                 self.assertNotIn(secret, str(diagnostics))
 
+    async def test_user_setup_offers_manual_connection_from_the_discovery_menu(self):
+        flows = self.hass.config_entries.flow
+        flow = await flows.async_init(DOMAIN, context={"source": "user"})
+        self.assertEqual(flow["type"], "menu")
+        self.assertEqual(flow["step_id"], "user")
+        self.assertEqual(flow["menu_options"], ["connect"])
+
+        form = await flows.async_configure(flow["flow_id"], {"next_step_id": "connect"})
+        self.assertEqual(form["type"], "form")
+        self.assertEqual(form["step_id"], "connect")
+        self.assertEqual(
+            set(form["data_schema"].schema), {"host", "username", "port", "password"}
+        )
+
     async def test_discovery_confirms_ssh_credentials_and_sets_up_one_entry(self):
         flows = self.hass.config_entries.flow
         flow = await flows.async_init(
             DOMAIN, context={"source": "zeroconf"}, data=discovery(CONNECTION["host"])
         )
-        self.assertEqual(flow["step_id"], "user")
+        self.assertEqual(flow["step_id"], "connect")
         host_field = next(key for key in flow["data_schema"].schema if key == "host")
         host = host_field.description["suggested_value"]
         self.assertEqual(host, "Time-Capsule-Test.local")

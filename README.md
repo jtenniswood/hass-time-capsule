@@ -50,9 +50,12 @@ Copy the whole `custom_components/time_capsule` folder into Home Assistant's
 
 ## Connect your Time Capsule
 
-1. Go to **Settings → Devices & services**. If your fifth-generation Time
-   Capsule appears under **Discovered** via Bonjour, select **Configure**.
-   For manual setup, choose **Add integration → Time Capsule Sensors**.
+[![Open Devices & services in Home Assistant](https://my.home-assistant.io/badges/integrations.svg)](https://my.home-assistant.io/redirect/integrations/)
+
+1. After restarting Home Assistant, open **Settings → Devices & services →
+   Integrations**. If your fifth-generation Time Capsule appears under
+   **Discovered** via Bonjour, select **Configure**. Otherwise, choose
+   **Add integration → Time Capsule Sensors → Enter address manually**.
 2. Enter the Time Capsule's hostname or IP address, SSH username (default
    `root`), SSH port (default `22`), and base station admin password.
    Bonjour discovery suggests the local hostname when available. You can

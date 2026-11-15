@@ -2,6 +2,13 @@
   "config": {
     "step": {
       "user": {
+        "title": "Set up Time Capsule",
+        "description": "Open [Devices & services](/config/integrations/dashboard) and look under **Discovered** for your Time Capsule. If it doesn't appear there, you can enter its address manually.",
+        "menu_options": {
+          "connect": "Enter address manually"
+        }
+      },
+      "connect": {
         "title": "Connect to Time Capsule",
         "description": "Enter the SSH connection details for your Time Capsule.",
         "data": {
