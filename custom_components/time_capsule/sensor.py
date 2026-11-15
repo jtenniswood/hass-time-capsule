@@ -103,6 +103,7 @@ async def async_setup_entry(
 class TimeCapsuleEnvstatSensor(TimeCapsuleEntity, SensorEntity):
     """A single envstat reading (temperature or fan speed)."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
 
     def __init__(

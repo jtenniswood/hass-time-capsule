@@ -9,9 +9,10 @@ entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 
 | On the Home Assistant device page | What it shows |
 | --- | --- |
-| **Sensors** | Available internal and external temperature readings, fan speed (RPM), and the internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
+| **Sensors** | The internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
 | **Sensors → SMART Status** | A drive health summary: **Passed**, **Failed**, **Unknown**, **Disabled**, or **Not Supported**. A drive-reported failure or a critical attribute at or below its threshold sets **Failed**. An incomplete report shows **Unknown**. |
 | **Diagnostics → SSH Connected and Last Successful Reading** | Whether Home Assistant can connect and when each sensor check last succeeded. |
+| **Diagnostics** | Available internal and external temperature readings and fan speed (RPM). |
 | **Diagnostics** | Individual SMART readings reported by the drive, such as disk temperature, power-on hours, pending sectors, and reallocated sectors. Each sensor shows the raw reading and includes the normalized value, threshold, and whether the attribute is critical. Unrecognized attributes include their numeric ID in the name. |
 
 ## Before you install
