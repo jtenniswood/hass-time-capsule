@@ -69,5 +69,15 @@
       "invalid_share": "Enter the share name only, without a server address or folder path.",
       "incomplete_share": "Enter a share name, SMB username, and password together, or clear all three entries."
     }
+  },
+  "issues": {
+    "retired_alert_connection": {
+      "title": "Replace SSH Connected in your Time Capsule alerts",
+      "description": "An automation still uses the retired sensor `{entity_id}`. Edit the automation and select **Backup Volume Mounted** (`{replacement}`) under **Connection and mount sensors**. This also detects when the backup volume is unmounted."
+    },
+    "retired_alert_temperature": {
+      "title": "Update a Time Capsule temperature alert",
+      "description": "An automation still uses the retired temperature sensor `{entity_id}`. Edit the automation and select **Temperature** (`{replacement}`). Check the threshold because the new sensor can use a different temperature source."
+    }
   }
 }

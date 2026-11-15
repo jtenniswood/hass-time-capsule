@@ -20,10 +20,8 @@ entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 | **Diagnostics → Fan Speed** | Fan speed in RPM. |
 | **Diagnostics → Drive health readings** | Reallocated sectors, pending sectors, offline uncorrectable sectors, reported uncorrectable errors, spin retries, Ultra DMA CRC errors, power cycles, and power-on days. Readings appear when the drive reports them. |
 
-On upgrade, Home Assistant removes retired sensors from the device. If an
-alert used **SSH Connected**, select **Backup Volume Mounted** in the alert
-blueprint. If a temperature alert used a retired sensor, select
-**Temperature** and check that the limit suits the new reading.
+If an alert still uses **SSH Connected** or a retired temperature sensor,
+see [Update existing alerts](#update-existing-alerts).
 
 ## Before you install
 
@@ -124,6 +122,26 @@ enable temperature alerts, set the limit in the sensor's displayed unit and
 use the drive's limits and your normal backup readings as a guide. The
 [original YAML example](examples/monitoring.yaml) is available for existing
 setups. Disable any overlapping alerts when switching to the blueprint.
+
+### Update existing alerts
+
+1. After updating the integration, open **Settings → System → Repairs**. A
+   Time Capsule repair lists the retired sensor and the replacement on your
+   device.
+2. Open the affected automation in **Settings → Automations & scenes**. In
+   the alert blueprint, replace **SSH Connected** with **Backup Volume Mounted**
+   under **Connection and mount sensors**. Replace a retired temperature
+   reading with **Temperature** and review the threshold in the displayed
+   unit. Save the automation to clear the repair.
+
+To update an imported blueprint, go to **Settings → Automations & scenes →
+Blueprints**, find **Time Capsule health and backup alerts**, and choose
+**⋮ → Re-import blueprint**. Your existing automations use the updated blueprint
+and keep their sensor selections. If a selected sensor is missing, Home Assistant
+shows a **Time Capsule alert needs attention** notification listing its entity ID.
+The notification clears after you replace the sensor or clear that selection.
+
+[Home Assistant blueprint update instructions](https://www.home-assistant.io/docs/automation/using_blueprints/#re-importing-a-blueprint)
 
 ## Monitor completed Time Machine backups
 

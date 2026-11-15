@@ -4,6 +4,7 @@ import unittest
 from dataclasses import replace
 from ipaddress import ip_address
 from pathlib import Path
+from shutil import copyfile
 from tempfile import TemporaryDirectory
 from unittest.mock import MagicMock, patch
 
@@ -22,6 +23,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
 
 from custom_components.time_capsule.client import (
@@ -378,6 +380,79 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(float(self.hass.states.get(temperature).state), 52)
             await entry.runtime_data.async_refresh()
             self.assertEqual(float(self.hass.states.get(temperature).state), 45.32)
+
+    async def test_upgrade_reports_retired_sensor_in_existing_blueprint(self):
+        root = Path(self.hass.config.config_dir)
+        blueprint = root / "blueprints/automation/time-capsule/monitoring.yaml"
+        blueprint.parent.mkdir(parents=True)
+        copyfile(Path(__file__).resolve().parents[1] / blueprint.relative_to(root), blueprint)
+        old_link = "binary_sensor.my_old_connection"
+        old_temperature = "sensor.my_old_temperature"
+        (root / "configuration.yaml").write_text("""
+input_text:
+  capsule_alerts:
+    max: 255
+automation:
+  - id: capsule_alerts
+    alias: Capsule alerts
+    use_blueprint:
+      path: time-capsule/monitoring.yaml
+      input:
+        saved_state: input_text.capsule_alerts
+        connectivity: [binary_sensor.my_old_connection]
+        temperature: sensor.my_old_temperature
+""")
+        await self.hass.services.async_call("automation", "reload", blocking=True)
+        with patch(
+            "custom_components.time_capsule.fetch_time_capsule_data",
+            return_value=poll_result(),
+        ):
+            entry = await self.async_add_legacy_entry(
+                version=2,
+                sensors=(
+                    ("binary_sensor", "ssh_connected", {
+                        "suggested_object_id": "my_old_connection",
+                    }),
+                    ("sensor", "smart_190", {
+                        "suggested_object_id": "my_old_temperature",
+                        "original_device_class": "temperature",
+                    }),
+                    ("sensor", "tsensor0_T_external1", {
+                        "original_device_class": "temperature",
+                    }),
+                ),
+            )
+        await self.hass.async_start()
+        await self.hass.async_block_till_done()
+
+        issues = ir.async_get(self.hass)
+        repairs = {
+            issue.translation_placeholders["entity_id"]: issue
+            for (domain, _), issue in issues.issues.items()
+            if domain == DOMAIN
+        }
+        self.assertEqual(set(repairs), {old_link, old_temperature})
+        device_key = entry.data[CONF_ENTITY_KEY]
+        replacement_link = self.entity_id("binary_sensor", device_key, "volume_mounted")
+        replacement_temperature = self.entity_id("sensor", device_key, "smart_194")
+        self.assertEqual(
+            repairs[old_link].translation_placeholders["replacement"], replacement_link
+        )
+        self.assertEqual(
+            repairs[old_temperature].translation_placeholders["replacement"],
+            replacement_temperature,
+        )
+
+        config_file = root / "configuration.yaml"
+        config_file.write_text(
+            config_file.read_text()
+            .replace(old_link, replacement_link)
+            .replace(old_temperature, replacement_temperature)
+        )
+        await self.hass.services.async_call("automation", "reload", blocking=True)
+        await self.hass.async_block_till_done()
+        for repair in repairs.values():
+            self.assertIsNone(issues.async_get_issue(DOMAIN, repair.issue_id))
 
     async def test_smb_and_mount_checks_and_diagnostics(self):
         with (
