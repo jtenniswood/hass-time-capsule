@@ -244,10 +244,8 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(flow["step_id"], "user")
         host_field = next(key for key in flow["data_schema"].schema if key == "host")
-        self.assertEqual(
-            host_field.description["suggested_value"],
-            CONNECTION["host"],
-        )
+        host = host_field.description["suggested_value"]
+        self.assertEqual(host, "Time-Capsule-Test.local")
 
         with (
             patch(
@@ -259,13 +257,23 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
                 return_value=poll_result(),
             ),
         ):
-            result = await flows.async_configure(flow["flow_id"], CONNECTION)
+            result = await flows.async_configure(
+                flow["flow_id"], {**CONNECTION, "host": host}
+            )
             await self.hass.async_block_till_done()
         entry = result["result"]
         self.assertEqual(entry.state, ConfigEntryState.LOADED)
+        self.assertEqual(entry.data["host"], host)
         self.assertEqual(entry.data[CONF_AIRPORT_MAC], "02:00:00:00:00:01")
         self.assertEqual(entry.unique_id, FINGERPRINT)
         self.assertEqual(len(self.hass.config_entries.async_entries(DOMAIN)), 1)
+
+    async def test_discovery_suggests_ip_without_a_hostname(self):
+        flows = self.hass.config_entries.flow
+        info = replace(discovery(CONNECTION["host"]), hostname="")
+        flow = await flows.async_init(DOMAIN, context={"source": "zeroconf"}, data=info)
+        host_field = next(key for key in flow["data_schema"].schema if key == "host")
+        self.assertEqual(host_field.description["suggested_value"], CONNECTION["host"])
 
     async def test_last_reading_is_restored_when_reloaded_offline(self):
         with patch(
