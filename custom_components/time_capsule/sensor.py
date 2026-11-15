@@ -92,12 +92,7 @@ class _TimeCapsuleEntity(CoordinatorEntity[DataUpdateCoordinator[TimeCapsuleData
 
     def __init__(self, coordinator: DataUpdateCoordinator[TimeCapsuleData], host: str) -> None:
         super().__init__(coordinator)
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, host)},
-            name="Time Capsule",
-            manufacturer="Apple",
-            model="Apple Time Capsule",
-        )
+        self._attr_device_info = DeviceInfo(identifiers={(DOMAIN, host)})
 
 
 class TimeCapsuleEnvstatSensor(_TimeCapsuleEntity, SensorEntity):

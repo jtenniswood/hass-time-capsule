@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import paramiko
 
 from .const import (
+    BASE_STATION_NAME_COMMAND,
     CONNECT_TIMEOUT,
     DF_COMMAND,
     ENVSTAT_COMMAND,
@@ -34,11 +35,12 @@ class TimeCapsuleAuthError(TimeCapsuleConnectionError):
 
 @dataclass(frozen=True)
 class TimeCapsuleData:
-    """Everything fetched from one poll: envstat, SMART status, and disk usage."""
+    """Sensor readings and optional base station name from one SSH session."""
 
     envstat: dict[str, EnvstatReading]
     smart: SmartStatus
     disk: DiskUsage | None
+    base_station_name: str | None = None
 
 
 def _connect(host: str, port: int, username: str, password: str) -> paramiko.Transport:
@@ -71,17 +73,17 @@ def _connect(host: str, port: int, username: str, password: str) -> paramiko.Tra
 def _run_command(transport: paramiko.Transport, command: str) -> str:
     """Run one command over an already-authenticated transport."""
     try:
-        channel = transport.open_session(timeout=CONNECT_TIMEOUT)
-        channel.settimeout(CONNECT_TIMEOUT)
-        channel.exec_command(command)
+        with transport.open_session(timeout=CONNECT_TIMEOUT) as channel:
+            channel.settimeout(CONNECT_TIMEOUT)
+            channel.exec_command(command)
 
-        chunks: list[bytes] = []
-        while True:
-            chunk = channel.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        exit_status = channel.recv_exit_status()
+            chunks: list[bytes] = []
+            while True:
+                chunk = channel.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            exit_status = channel.recv_exit_status()
     except (paramiko.SSHException, OSError, EOFError) as err:
         raise TimeCapsuleConnectionError(f"'{command}' failed: {err}") from err
 
@@ -92,23 +94,33 @@ def _run_command(transport: paramiko.Transport, command: str) -> str:
 
 
 def fetch_time_capsule_data(
-    host: str, port: int, username: str, password: str
+    host: str, port: int, username: str, password: str, *, include_name: bool = False
 ) -> TimeCapsuleData:
-    """Open one SSH session, run envstat, smart status, and df, and parse all three.
+    """Fetch sensor readings and optionally the base station name over one SSH connection.
 
-    Blocking; run in an executor. A single session is used for all three
-    commands to spare this old device a second/third key-exchange handshake
-    every poll.
+    Blocking; run in an executor.
     """
+    base_station_name = None
     transport = _connect(host, port, username, password)
     try:
         envstat_output = _run_command(transport, ENVSTAT_COMMAND)
         smart_output = _run_command(transport, SMART_COMMAND)
         df_output = _run_command(transport, DF_COMMAND)
+        if include_name:
+            try:
+                name = _run_command(transport, BASE_STATION_NAME_COMMAND).strip()
+            except TimeCapsuleConnectionError:
+                # The name is optional on firmware where ACP is unavailable.
+                pass
+            else:
+                if len(name.splitlines()) == 1 and "\x00" not in name:
+                    base_station_name = name
     finally:
         transport.close()
 
     envstat = {reading.key: reading for reading in parse_envstat(envstat_output)}
     smart = parse_smart_status(smart_output)
     disk = parse_df(df_output)
-    return TimeCapsuleData(envstat=envstat, smart=smart, disk=disk)
+    return TimeCapsuleData(
+        envstat=envstat, smart=smart, disk=disk, base_station_name=base_station_name
+    )

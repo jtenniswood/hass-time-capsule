@@ -9,10 +9,12 @@ they produce between them.
 from __future__ import annotations
 
 import logging
+from functools import partial
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PASSWORD, CONF_PORT, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .client import TimeCapsuleConnectionError, TimeCapsuleData, fetch_time_capsule_data
@@ -29,11 +31,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     port = entry.data[CONF_PORT]
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
+    include_name = True
 
     async def _async_update() -> TimeCapsuleData:
         try:
             return await hass.async_add_executor_job(
-                fetch_time_capsule_data, host, port, username, password
+                partial(
+                    fetch_time_capsule_data,
+                    host,
+                    port,
+                    username,
+                    password,
+                    include_name=include_name,
+                )
             )
         except TimeCapsuleConnectionError as err:
             raise UpdateFailed(str(err)) from err
@@ -46,6 +56,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         update_interval=DEFAULT_SCAN_INTERVAL,
     )
     await coordinator.async_config_entry_first_refresh()
+    include_name = False
+
+    registry = dr.async_get(hass)
+    identifiers = {(DOMAIN, host)}
+    previous_name = next(
+        (
+            device.name
+            for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
+            if (DOMAIN, host) in device.identifiers
+        ),
+        None,
+    )
+    base_station_name = coordinator.data.base_station_name
+
+    # Replace automatic titles while respecting titles chosen in Home Assistant.
+    if base_station_name and entry.title in (f"Time Capsule ({host})", previous_name):
+        hass.config_entries.async_update_entry(entry, title=base_station_name)
+
+    registry.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers=identifiers,
+        name=base_station_name or previous_name or "Time Capsule",
+        manufacturer="Apple",
+        model="Apple Time Capsule",
+    )
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_reload_entry))

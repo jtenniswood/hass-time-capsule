@@ -79,6 +79,9 @@ Configuration is done entirely from the UI -- there's no YAML.
 To change any of these later, open the integration's entry and click
 **Configure** -- no need to remove and re-add it.
 
+Home Assistant uses the name from AirPort Utility when the integration loads.
+Reload the Time Capsule entry to pick up a name you changed in AirPort Utility.
+
 The poll interval is fixed at 60 seconds and isn't currently exposed in the
 UI.
 

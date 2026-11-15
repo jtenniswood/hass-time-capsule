@@ -90,11 +90,11 @@ class TimeCapsuleOptionsFlow(config_entries.OptionsFlow):
     """Edit an existing entry's connection details (host, user, port, password)."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
+        self._entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None):
         errors: dict[str, str] = {}
-        current = user_input or self.config_entry.data
+        current = user_input or self._entry.data
 
         if user_input is not None:
             try:
@@ -107,10 +107,11 @@ class TimeCapsuleOptionsFlow(config_entries.OptionsFlow):
                 _LOGGER.exception("Unexpected error validating Time Capsule connection")
                 errors["base"] = "unknown"
             else:
+                title = self._entry.title
+                if user_input[CONF_HOST] != self._entry.data[CONF_HOST]:
+                    title = f"Time Capsule ({user_input[CONF_HOST]})"
                 self.hass.config_entries.async_update_entry(
-                    self.config_entry,
-                    data=user_input,
-                    title=f"Time Capsule ({user_input[CONF_HOST]})",
+                    self._entry, data=user_input, title=title
                 )
                 # Data (not options) holds the connection details, and
                 # async_update_entry above already triggers the listener that
