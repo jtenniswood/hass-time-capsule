@@ -97,9 +97,12 @@ and enable **Monitor the SMB service**.
   configured for SMB. To keep its password when editing the same share and
   username, leave the password field blank.
 
-The SMB checks run independently of regular SSH outages. A successful check
-shows that Home Assistant can open the share. Each Mac's backup reporter
-shows whether that Mac completed a backup to its configured destination.
+The SMB checks keep running during an SSH outage or while Home Assistant
+waits for you to update the SSH password. SSH readings, including **Backup
+Volume Mounted**, are unavailable until SSH works again. A successful SMB
+share check shows that Home Assistant can open the share. Each Mac's backup
+reporter shows when that Mac last completed a backup to its configured
+destination.
 
 ## Set up alerts
 

@@ -1,10 +1,10 @@
-"""Poll each Time Capsule over one shared SSH connection."""
+"""Monitor a Time Capsule using separate SSH and SMB checks."""
 
 from __future__ import annotations
 
 import logging
 from asyncio import gather
-from dataclasses import replace
+from dataclasses import dataclass
 from datetime import datetime
 from functools import partial
 
@@ -48,7 +48,7 @@ from .const import (
     SMART_POWER_ON_HOURS_ID,
     SMART_TEMPERATURE_ID,
 )
-from .smb import probe_smb
+from .smb import SmbStatus, probe_smb
 from .smart import SmartStatus
 
 _LOGGER = logging.getLogger(__name__)
@@ -71,22 +71,6 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
         self._read_name = True
 
     async def _async_update_data(self) -> TimeCapsuleData:
-        options = self.entry.options
-        if options.get(CONF_MONITOR_SMB):
-            hardware, smb = await gather(
-                self._async_read_hardware(),
-                self.hass.async_add_executor_job(
-                    probe_smb,
-                    self.entry.data[CONF_HOST],
-                    options.get(CONF_SMB_SHARE, ""),
-                    options.get(CONF_SMB_USERNAME, ""),
-                    options.get(CONF_SMB_PASSWORD, ""),
-                ),
-            )
-            return replace(hardware, smb=smb)
-        return await self._async_read_hardware()
-
-    async def _async_read_hardware(self) -> TimeCapsuleData:
         data = self.entry.data
         try:
             result = await self.hass.async_add_executor_job(
@@ -100,10 +84,14 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
                     include_name=self._read_name,
                 )
             )
-        except TimeCapsuleAuthError as err:
-            raise ConfigEntryAuthFailed from err
         except TimeCapsuleConnectionError as err:
-            if self.data is None or self.data.connected:
+            if isinstance(err, TimeCapsuleAuthError):
+                if not self.entry.options.get(CONF_MONITOR_SMB):
+                    raise ConfigEntryAuthFailed from err
+                # Keep the entry loaded for SMB and pause automatic SSH attempts.
+                self.update_interval = None
+                self.entry.async_start_reauth(self.hass)
+            elif self.data is None or self.data.connected:
                 _LOGGER.warning("Time Capsule SSH unavailable: %s", err)
             return TimeCapsuleData(
                 envstat={},
@@ -114,6 +102,7 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
                 connected=False,
             )
 
+        self.update_interval = DEFAULT_SCAN_INTERVAL
         if self.data is not None and not self.data.connected:
             _LOGGER.info("Time Capsule SSH connection restored")
 
@@ -130,6 +119,38 @@ class TimeCapsuleCoordinator(DataUpdateCoordinator[TimeCapsuleData]):
         for check in result.successful_checks:
             self.last_success[check] = now
         return result
+
+
+class SmbCoordinator(DataUpdateCoordinator[SmbStatus]):
+    """Check the SMB port and share using their own polling schedule."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            config_entry=entry,
+            name=f"{DOMAIN} SMB ({entry.data[CONF_HOST]})",
+            update_interval=DEFAULT_SCAN_INTERVAL,
+        )
+        self.entry = entry
+
+    async def _async_update_data(self) -> SmbStatus:
+        options = self.entry.options
+        return await self.hass.async_add_executor_job(
+            probe_smb,
+            self.entry.data[CONF_HOST],
+            options.get(CONF_SMB_SHARE, ""),
+            options.get(CONF_SMB_USERNAME, ""),
+            options.get(CONF_SMB_PASSWORD, ""),
+        )
+
+
+@dataclass
+class TimeCapsuleRuntimeData:
+    """The independent checks for one Time Capsule entry."""
+
+    hardware: TimeCapsuleCoordinator
+    smb: SmbCoordinator | None
 
 
 def _async_register_device(
@@ -208,12 +229,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up one coordinator and its entities."""
-    coordinator = TimeCapsuleCoordinator(hass, entry)
-    await coordinator.async_config_entry_first_refresh()
-    if not coordinator.data.connected:
+    """Set up the hardware and optional SMB checks."""
+    hardware = TimeCapsuleCoordinator(hass, entry)
+    smb = None
+    if entry.options.get(CONF_MONITOR_SMB):
+        smb = SmbCoordinator(hass, entry)
+        # A failed optional check should still allow the entry to load and retry.
+        await gather(hardware.async_config_entry_first_refresh(), smb.async_refresh())
+    else:
+        await hardware.async_config_entry_first_refresh()
+    if not hardware.data.connected:
         _async_register_device(hass, entry, None)
-    entry.runtime_data = coordinator
+    entry.runtime_data = TimeCapsuleRuntimeData(hardware, smb)
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     async_watch_retired_alert_sensors(hass, entry)
     return True
