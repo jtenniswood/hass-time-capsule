@@ -1,5 +1,7 @@
 # Apple Time Capsule
 
+<img src="custom_components/time_capsule/brand/icon.png" alt="Apple Time Capsule integration icon" width="128" height="128">
+
 Time Capsule Sensors is a custom Home Assistant integration that monitors an
 Apple AirPort Time Capsule over your local network. It uses SSH to read the
 device's temperatures, fan speed, disk space, and drive health. Setup is
