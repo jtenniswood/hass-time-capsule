@@ -74,6 +74,13 @@ def _same_host(first: str, second: str) -> bool:
     return first.rstrip(".").casefold() == second.rstrip(".").casefold()
 
 
+def _matches_discovery(host: str, discovery: ZeroconfServiceInfo) -> bool:
+    return any(
+        _same_host(host, address)
+        for address in (discovery.hostname, discovery.host, *discovery.addresses)
+    )
+
+
 def _title_for_host(entry: config_entries.ConfigEntry, host: str) -> str:
     """Update the address on generic titles while retaining existing names."""
     if entry.title == f"Time Capsule ({entry.data[CONF_HOST]})":
@@ -121,14 +128,9 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         # Reserve this discovery while the confirmation form is open.
         await self.async_set_unique_id(f"airport:{mac}")
         self._abort_if_unique_id_configured()
-        hosts = (
-            *discovery_info.addresses,
-            discovery_info.host,
-            discovery_info.hostname,
-        )
         for entry in self._async_current_entries():
             data = entry.data
-            same_address = any(_same_host(data[CONF_HOST], host) for host in hosts)
+            same_address = _matches_discovery(data[CONF_HOST], discovery_info)
             if data.get(CONF_AIRPORT_MAC) != mac and (
                 not same_address or CONF_AIRPORT_MAC in data
             ):
@@ -195,7 +197,9 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         errors: dict[str, str] = {}
         current = dict(entry.data) if entry else {}
         if self._discovery:
-            current.setdefault(CONF_HOST, self._discovery.host)
+            current.setdefault(
+                CONF_HOST, self._discovery.hostname.rstrip(".") or self._discovery.host
+            )
         schema = _CONNECTION_SCHEMA
         if step == "reauth_confirm":
             schema = vol.Schema(
@@ -234,8 +238,8 @@ class TimeCapsuleConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(
                     fingerprint, raise_on_progress=entry is None
                 )
-                discovered = self._discovery is not None and _same_host(
-                    data[CONF_HOST], self._discovery.host
+                discovered = self._discovery is not None and _matches_discovery(
+                    data[CONF_HOST], self._discovery
                 )
                 for other in candidates:
                     if other.data.get(CONF_SSH_FINGERPRINT) == fingerprint:
