@@ -94,6 +94,7 @@ async def async_setup_entry(
 class TimeCapsuleFanSensor(TimeCapsuleEntity, SensorEntity):
     """Fan speed reported by envstat."""
 
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UNIT_FAN_RPM
     _attr_icon = "mdi:fan"

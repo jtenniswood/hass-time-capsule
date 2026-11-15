@@ -11,11 +11,12 @@ entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 
 | On the Home Assistant device page | What it shows |
 | --- | --- |
-| **Sensors** | Fan speed (RPM), and the internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
+| **Sensors** | The internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
 | **Sensors → SMART Status** | A drive health summary: **Passed**, **Failed**, **Unknown**, **Disabled**, or **Not Supported**. A drive-reported failure or a critical attribute at or below its threshold sets **Failed**. An incomplete report shows **Unknown**. |
 | **Diagnostics → Last Successful Reading** | When the most recent hardware reading arrived, with timestamps for each check. |
 | **Diagnostics → Backup Volume Mounted** | Whether the internal backup filesystem is mounted. |
 | **Diagnostics → SMB Port Open and SMB Share Accessible** | Optional checks from Home Assistant for TCP port 445 and read-only access to the configured share. |
+| **Diagnostics → Fan Speed** | Fan speed in RPM. |
 | **Diagnostics → Temperature** | A single reading, using drive temperature when available, then airflow temperature or a Time Capsule temperature reading. |
 | **Diagnostics → Drive health readings** | Reallocated sectors, pending sectors, offline uncorrectable sectors, reported uncorrectable errors, spin retries, Ultra DMA CRC errors, power cycles, and power-on days. Readings appear when the drive reports them. |
 
