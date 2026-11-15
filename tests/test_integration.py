@@ -18,6 +18,7 @@ except ModuleNotFoundError as err:
 
 from homeassistant import loader
 from homeassistant.config_entries import ConfigEntry, ConfigEntryDisabler, ConfigEntryState
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -314,14 +315,24 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
             ]
             return parse_smart_status("\n".join(["SMART supported, SMART enabled", *rows]))
 
-        full = replace(poll_result(), smart=smart_without())
+        fan = parse_envstat("[tsensor0]\nFan_rpm: 1757 RPM")[0]
+        readings = poll_result()
+        full = replace(
+            readings,
+            envstat={**readings.envstat, fan.key: fan},
+            smart=smart_without(),
+        )
         legacy_sensors = (
             ("binary_sensor", "ssh_connected", {}),
             ("sensor", "smart_1", {}),
             ("sensor", "smart_184", {}),
             ("sensor", "smart_190", {"original_device_class": "temperature"}),
             ("sensor", "tsensor0_T_internal", {"original_device_class": "temperature"}),
-            ("sensor", "smart_194", {"suggested_object_id": "my_drive_temp"}),
+            ("sensor", "smart_194", {
+                "suggested_object_id": "my_drive_temp",
+                "entity_category": EntityCategory.DIAGNOSTIC,
+            }),
+            ("sensor", fan.key, {"suggested_object_id": "my_fan_speed"}),
             ("sensor", "smart_9", {
                 "suggested_object_id": "my_drive_runtime",
                 "original_device_class": "duration",
@@ -347,14 +358,21 @@ class TestHomeAssistant(unittest.IsolatedAsyncioTestCase):
                 "smart_5", "smart_9", "smart_10", "smart_12", "smart_187",
                 "smart_194", "smart_197", "smart_198", "smart_199", "last_reading",
                 "smart_status", "volume_mounted", "disk_free", "disk_used",
-                "disk_total", "disk_percent", "disk_free_percent",
+                "disk_total", "disk_percent", "disk_free_percent", fan.key,
             })
 
             runtime = self.hass.states.get("sensor.my_drive_runtime")
             self.assertEqual(runtime.attributes["unit_of_measurement"], "d")
             self.assertAlmostEqual(float(runtime.state), 16363 / 24)
 
+            fan_speed = "sensor.my_fan_speed"
+            self.assertEqual(
+                registry.async_get(fan_speed).entity_category, EntityCategory.DIAGNOSTIC
+            )
+            self.assertEqual(float(self.hass.states.get(fan_speed).state), 1757)
+
             temperature = "sensor.my_drive_temp"
+            self.assertIsNone(registry.async_get(temperature).entity_category)
             self.assertEqual(float(self.hass.states.get(temperature).state), 49)
             await entry.runtime_data.async_refresh()
             self.assertEqual(float(self.hass.states.get(temperature).state), 52)
