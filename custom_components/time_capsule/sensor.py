@@ -1,14 +1,4 @@
-"""Sensor entities for a modded Time Capsule: envstat, SMART, and disk usage.
-
-Set up from the UI (Settings -> Devices & Services -> Add Integration ->
-Time Capsule Sensors); see config_flow.py. Exposes every degC envstat
-reading (other than T_hdd, which this hardware never populates) as a
-temperature sensor, the fan RPM reading as a fan-speed sensor, every SMART
-attribute as its own sensor, one overall SMART pass/fail sensor, and the
-internal drive's total, used, and free space plus percentages used and free.
-Which envstat sensors show up is driven entirely by what envstat reports,
-not a hardcoded list; same for the SMART attributes.
-"""
+"""Expose Time Capsule drive health, fan speed, and disk usage."""
 
 from __future__ import annotations
 
@@ -37,8 +27,10 @@ from . import TimeCapsuleCoordinator
 from .const import (
     CONF_ENTITY_KEY,
     DOMAIN,
-    FRIENDLY_NAMES,
     HARDWARE_CHECKS,
+    SMART_HEALTH_IDS,
+    SMART_POWER_ON_HOURS_ID,
+    SMART_TEMPERATURE_ID,
     UNIT_FAN_RPM,
     UNIT_TEMPERATURE,
 )
@@ -53,13 +45,6 @@ DISK_METRIC_NAMES = {
     "free_percent": "Disk Free Percentage",
 }
 
-SMART_TEMPERATURE_DESCRIPTIONS = ("Temperature", "Airflow Temperature")
-SMART_POWER_ON_HOURS_DESCRIPTION = "Power-on hours count"
-
-
-def _friendly_name(label: str) -> str:
-    return FRIENDLY_NAMES.get(label, label.replace("_", " ").strip())
-
 
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
@@ -67,7 +52,7 @@ async def async_setup_entry(
     """Add fixed sensors and readings as they first arrive."""
     coordinator: TimeCapsuleCoordinator = entry.runtime_data
     device_key = entry.data[CONF_ENTITY_KEY]
-    envstat_keys: set[str] = set()
+    fan_keys: set[str] = set()
     smart_ids: set[int] = set()
 
     @callback
@@ -75,12 +60,16 @@ async def async_setup_entry(
         if not coordinator.last_update_success:
             return
         entities: list[SensorEntity] = []
-        for key in coordinator.data.envstat:
-            if key not in envstat_keys:
-                entities.append(TimeCapsuleEnvstatSensor(coordinator, device_key, key))
-                envstat_keys.add(key)
+        for key, reading in coordinator.data.envstat.items():
+            if reading.unit == UNIT_FAN_RPM and key not in fan_keys:
+                entities.append(TimeCapsuleFanSensor(coordinator, device_key, key))
+                fan_keys.add(key)
         for attr in coordinator.data.smart.attributes:
-            if attr.id not in smart_ids:
+            if (
+                attr.id in SMART_HEALTH_IDS
+                and attr.id not in smart_ids
+                and attr.description.casefold() != "unknown"
+            ):
                 entities.append(
                     TimeCapsuleSmartAttributeSensor(coordinator, device_key, attr)
                 )
@@ -90,6 +79,7 @@ async def async_setup_entry(
 
     entities: list[SensorEntity] = [
         TimeCapsuleSmartStatusSensor(coordinator, device_key),
+        TimeCapsuleTemperatureSensor(coordinator, device_key),
         TimeCapsuleLastReadingSensor(coordinator, device_key),
     ]
     entities.extend(
@@ -101,10 +91,12 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(async_add_new_readings))
 
 
-class TimeCapsuleEnvstatSensor(TimeCapsuleEntity, SensorEntity):
-    """A single envstat reading (temperature or fan speed)."""
+class TimeCapsuleFanSensor(TimeCapsuleEntity, SensorEntity):
+    """Fan speed reported by envstat."""
 
     _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UNIT_FAN_RPM
+    _attr_icon = "mdi:fan"
 
     def __init__(
         self, coordinator: TimeCapsuleCoordinator, device_key: str, key: str
@@ -114,14 +106,11 @@ class TimeCapsuleEnvstatSensor(TimeCapsuleEntity, SensorEntity):
 
         reading = coordinator.data.envstat[key]
         self._attr_unique_id = f"{DOMAIN}_{device_key}_{key}"
-        self._attr_name = _friendly_name(reading.label)
-
-        if reading.unit == UNIT_TEMPERATURE:
-            self._attr_device_class = SensorDeviceClass.TEMPERATURE
-            self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-        elif reading.unit == UNIT_FAN_RPM:
-            self._attr_native_unit_of_measurement = UNIT_FAN_RPM
-            self._attr_icon = "mdi:fan"
+        self._attr_name = (
+            "Fan Speed"
+            if reading.label == "Fan_rpm"
+            else reading.label.replace("_", " ").strip()
+        )
 
     @property
     def available(self) -> bool:
@@ -146,45 +135,97 @@ class TimeCapsuleSmartAttributeSensor(TimeCapsuleEntity, SensorEntity):
         self._smart_id = attr.id
         self._attr_unique_id = f"{DOMAIN}_{device_key}_{attr.key}"
         self._attr_name = attr.description
-        if attr.description.casefold() == "unknown":
-            self._attr_name = f"Unknown SMART Attribute {attr.id}"
-
-        if attr.description in SMART_TEMPERATURE_DESCRIPTIONS:
-            self._attr_device_class = SensorDeviceClass.TEMPERATURE
-            self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-        elif attr.description == SMART_POWER_ON_HOURS_DESCRIPTION:
+        if attr.id == SMART_POWER_ON_HOURS_ID:
+            self._attr_name = "Power-on Days"
             self._attr_device_class = SensorDeviceClass.DURATION
-            self._attr_native_unit_of_measurement = UnitOfTime.HOURS
+            self._attr_native_unit_of_measurement = UnitOfTime.DAYS
+            self._attr_suggested_display_precision = 0
         else:
             self._attr_icon = "mdi:harddisk"
 
-    def _attribute(self):
+    def _attribute(self) -> SmartAttribute | None:
         return next(
-            a for a in self.coordinator.data.smart.attributes if a.id == self._smart_id
+            (
+                attr for attr in self.coordinator.data.smart.attributes
+                if attr.id == self._smart_id and attr.description.casefold() != "unknown"
+            ),
+            None,
         )
 
     @property
     def available(self) -> bool:
-        return super().available and any(
-            a.id == self._smart_id for a in self.coordinator.data.smart.attributes
-        )
+        return super().available and self._attribute() is not None
 
     @property
-    def native_value(self) -> Any:
-        return self._attribute().raw if self.available else None
+    def native_value(self) -> int | float | None:
+        attr = self._attribute()
+        if attr is None:
+            return None
+        if self._smart_id == SMART_POWER_ON_HOURS_ID:
+            return attr.raw / 24
+        return attr.raw
 
     @property
     def extra_state_attributes(self) -> dict[str, Any] | None:
-        if not self.available:
-            return None
         attr = self._attribute()
-        return {
-            "normalized_value": attr.value,
-            "threshold": attr.thresh,
-            "critical": attr.critical,
-            "collect": attr.collect,
-            "reliability": attr.reliability,
-        }
+        return _smart_details(attr) if attr is not None else None
+
+
+def _smart_details(attr: SmartAttribute) -> dict[str, Any]:
+    return {
+        "normalized_value": attr.value,
+        "threshold": attr.thresh,
+        "critical": attr.critical,
+        "collect": attr.collect,
+        "reliability": attr.reliability,
+    }
+
+
+class TimeCapsuleTemperatureSensor(TimeCapsuleEntity, SensorEntity):
+    """Prefer drive temperature and fall back to available hardware readings."""
+
+    _attr_name = "Temperature"
+    _attr_device_class = SensorDeviceClass.TEMPERATURE
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: TimeCapsuleCoordinator, device_key: str) -> None:
+        super().__init__(coordinator, device_key)
+        self._attr_unique_id = f"{DOMAIN}_{device_key}_smart_{SMART_TEMPERATURE_ID}"
+
+    def _smart_temperature(self) -> SmartAttribute | None:
+        readings = self.coordinator.data.smart.attributes
+        for description in ("Temperature", "Airflow Temperature"):
+            for attr in readings:
+                if attr.description == description:
+                    return attr
+        return None
+
+    @property
+    def available(self) -> bool:
+        return super().available and self.native_value is not None
+
+    @property
+    def native_value(self) -> int | float | None:
+        if attr := self._smart_temperature():
+            return attr.raw
+        readings = [
+            reading
+            for reading in self.coordinator.data.envstat.values()
+            if reading.unit == UNIT_TEMPERATURE
+        ]
+        if readings:
+            return next(
+                (reading.value for reading in readings if reading.label == "T_internal"),
+                readings[0].value,
+            )
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        attr = self._smart_temperature()
+        return _smart_details(attr) if attr is not None else None
 
 
 class TimeCapsuleSmartStatusSensor(TimeCapsuleEntity, SensorEntity):

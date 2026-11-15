@@ -4,19 +4,25 @@
 
 Time Capsule Sensors is a custom Home Assistant integration that monitors an
 Apple AirPort Time Capsule over your local network. It uses SSH to read the
-device's temperatures, fan speed, disk space, and drive health. Setup is
+device's temperature, fan speed, disk space, and drive health. Setup is
 entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 
 ## What you can monitor
 
 | On the Home Assistant device page | What it shows |
 | --- | --- |
-| **Sensors** | Available internal and external temperature readings, fan speed (RPM), and the internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
+| **Sensors** | Fan speed (RPM), and the internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
 | **Sensors → SMART Status** | A drive health summary: **Passed**, **Failed**, **Unknown**, **Disabled**, or **Not Supported**. A drive-reported failure or a critical attribute at or below its threshold sets **Failed**. An incomplete report shows **Unknown**. |
-| **Diagnostics → SSH Connected and Last Successful Reading** | Whether Home Assistant can connect over SSH and when each hardware check last succeeded. |
+| **Diagnostics → Last Successful Reading** | When the most recent hardware reading arrived, with timestamps for each check. |
 | **Diagnostics → Backup Volume Mounted** | Whether the internal backup filesystem is mounted. |
 | **Diagnostics → SMB Port Open and SMB Share Accessible** | Optional checks from Home Assistant for TCP port 445 and read-only access to the configured share. |
-| **Diagnostics** | Individual SMART readings reported by the drive, such as disk temperature, power-on hours, pending sectors, and reallocated sectors. Each sensor shows the raw reading and includes the normalized value, threshold, and whether the attribute is critical. Unrecognized attributes include their numeric ID in the name. |
+| **Diagnostics → Temperature** | A single reading, using drive temperature when available, then airflow temperature or a Time Capsule temperature reading. |
+| **Diagnostics → Drive health readings** | Reallocated sectors, pending sectors, offline uncorrectable sectors, reported uncorrectable errors, spin retries, Ultra DMA CRC errors, power cycles, and power-on days. Readings appear when the drive reports them. |
+
+On upgrade, Home Assistant removes retired sensors from the device. If an
+alert used **SSH Connected**, select **Backup Volume Mounted** in the alert
+blueprint. If a temperature alert used a retired sensor, select
+**Temperature** and check that the limit suits the new reading.
 
 ## Before you install
 
@@ -71,8 +77,8 @@ a known Time Capsule can update its address after the SSH key is verified.
 If setup reports a connection error, check the address, port, and whether
 SSH is enabled and reachable from Home Assistant. If it reports an
 authentication error, check the SSH username and base station admin password.
-If existing sensors become unavailable, check **SSH Connected** and
-**Last Successful Reading** on the device page.
+If sensors become unavailable, check **Last Successful Reading** on the
+device page.
 
 ## Check the backup volume and share
 
@@ -103,8 +109,8 @@ shows whether that Mac completed a backup to its configured destination.
    so it can remember active alerts and sector counts across restarts.
 2. Import the [Time Capsule alert blueprint](blueprints/automation/time-capsule/monitoring.yaml).
    Create an automation from it, select the helper, and choose the sensor
-   inputs you want to use. Select **SSH Connected**, **Backup Volume Mounted**,
-   or the optional SMB sensors under **Connection and mount sensors**.
+   inputs you want to use. Select **Backup Volume Mounted** or the optional SMB
+   sensors under **Connection and mount sensors**.
 3. Keep the default Home Assistant notification or set your own notification
    action. Use `{{ message }}` in the message field to include the fault or
    recovery details.

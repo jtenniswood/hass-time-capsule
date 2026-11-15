@@ -6,11 +6,6 @@ automation:
     mode: queued
     triggers:
       - trigger: state
-        entity_id: binary_sensor.time_capsule_ssh_connected
-        to: "off"
-        for: "00:05:00"
-        id: SSH has been disconnected for five minutes
-      - trigger: state
         entity_id: sensor.time_capsule_smart_status
         to: Failed
         id: SMART reported a drive failure

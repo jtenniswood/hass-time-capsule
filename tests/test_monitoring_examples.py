@@ -171,7 +171,7 @@ class TestMonitoringExamples(unittest.IsolatedAsyncioTestCase):
 
     async def test_sustained_connection_temperature_and_disk_alerts(self):
         await self.start_hass()
-        self.hass.states.async_set(CONNECTION, "off")
+        self.hass.states.async_set(CONNECTION, "unavailable")
         self.hass.states.async_set(TEMPERATURE, "58")
         self.hass.states.async_set(DISK, "9.5")
         await self.hass.async_start()

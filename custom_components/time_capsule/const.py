@@ -38,15 +38,17 @@ UNIT_FAN_RPM = "RPM"
 # hardware and always reads 0.
 IGNORED_LABELS = {"T_hdd"}
 
-# Cosmetic only -- friendly names for the labels envstat is known to report.
-# Anything not listed here still becomes a sensor, just with a less polished
-# name derived from its raw label.
-FRIENDLY_NAMES = {
-    "T_internal": "Internal Temperature",
-    "T_external1": "External Temperature 1",
-    "T_external2": "External Temperature 2",
-    "T_external3": "External Temperature 3",
-    "Fan_rpm": "Fan Speed",
+SMART_POWER_ON_HOURS_ID = 9
+SMART_TEMPERATURE_ID = 194
+SMART_HEALTH_IDS = {
+    5,  # Reallocated sector count
+    SMART_POWER_ON_HOURS_ID,
+    10,  # Spin retry count
+    12,  # Device power cycle count
+    187,  # Reported uncorrectable errors
+    197,  # Current pending sector
+    198,  # Offline uncorrectable
+    199,  # Ultra DMA CRC error count
 }
 
 CONF_ENTITY_KEY = "entity_key"
