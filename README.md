@@ -11,7 +11,9 @@ entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 | --- | --- |
 | **Sensors** | Available internal and external temperature readings, fan speed (RPM), and the internal drive's total, used, and free space. Disk sizes default to TB with one decimal place. **Disk Used Percentage** and **Disk Free Percentage** are separate sensors. |
 | **Sensors → SMART Status** | A drive health summary: **Passed**, **Failed**, **Unknown**, **Disabled**, or **Not Supported**. A drive-reported failure or a critical attribute at or below its threshold sets **Failed**. An incomplete report shows **Unknown**. |
-| **Diagnostics → SSH Connected and Last Successful Reading** | Whether Home Assistant can connect and when each sensor check last succeeded. |
+| **Diagnostics → SSH Connected and Last Successful Reading** | Whether Home Assistant can connect over SSH and when each hardware check last succeeded. |
+| **Diagnostics → Backup Volume Mounted** | Whether the internal backup filesystem is mounted. |
+| **Diagnostics → SMB Port Open and SMB Share Accessible** | Optional checks from Home Assistant for TCP port 445 and read-only access to the configured share. |
 | **Diagnostics** | Individual SMART readings reported by the drive, such as disk temperature, power-on hours, pending sectors, and reallocated sectors. Each sensor shows the raw reading and includes the normalized value, threshold, and whether the attribute is critical. Unrecognized attributes include their numeric ID in the name. |
 
 ## Before you install
@@ -68,48 +70,90 @@ authentication error, check the SSH username and base station admin password.
 If existing sensors become unavailable, check **SSH Connected** and
 **Last Successful Reading** on the device page.
 
-## Alerts and backup monitoring
+## Check the backup volume and share
 
-- **Connection loss** Use **SSH Connected** to alert after several minutes
-  offline. Use **Last Successful Reading** to catch a poll that connects over
-  SSH but returns no usable measurements.
-- **Disk trouble** Alert when SMART becomes **Failed**, stays **Unknown**,
-  pending sectors appear, or reallocated sectors increase. The two sector
-  counters depend on what your disk reports.
-- **Disk space** Alert when free space stays below a threshold that suits your
-  backup size. Confirm the disk sensor's unit in Home Assistant when setting
-  the threshold.
-- **Cooling** Use the temperature and fan graphs to establish a baseline under
-  a normal backup load. Set a sustained high-temperature alert based on your
-  drive's limits and typical readings.
+**Backup Volume Mounted** checks the internal data volume, including when disk
+capacity is temporarily unreadable. If SSH is unavailable, Home Assistant
+shows the mount check as unavailable.
 
-The [monitoring package](examples/monitoring.yaml) provides example Home
-Assistant notifications for connection, SMART, disk space, and stalled readings.
-Copy it into your [Home Assistant packages folder](https://www.home-assistant.io/docs/configuration/packages/)
-and replace its sample entity IDs and thresholds. Use a copy with distinct
-automation IDs for each additional Time Capsule.
+To monitor a TimeCapsuleSMB share, open the integration's **Configure** options
+and enable **Monitor the SMB service**.
 
-You can also monitor **time since the last completed Time Machine backup** on
-each Mac that uses the Time Capsule as a destination:
+- **SMB Port Open** checks whether Home Assistant can open TCP port 445.
+- **SMB Share Accessible** is added when you enter the share name, SMB username,
+  and SMB password. It uses SMB 2 or 3 and opens the share for read-only access.
+  Enter the share name by itself, such as `Data`, and use the account you
+  configured for SMB. To keep its password when editing the same share and
+  username, leave the password field blank.
 
-1. Install the [Time Machine package](examples/time_machine_backup.yaml) in
-   Home Assistant. Add a long random `time_machine_mac_webhook` value to
-   `secrets.yaml` and reload or restart Home Assistant. Use a separate secret
-   and distinct sensor, automation, and entity IDs for each Mac and destination.
-2. On the Mac, use `tmutil destinationinfo` to find the mounted backup destination.
-   Run the [reporting script](examples/report-time-machine-backup.sh) from
-   Terminal with Full Disk Access. Substitute the actual mounted backup **volume**
-   and your Home Assistant address. If macOS requires root for `tmutil`, invoke
-   the script with `sudo` from that Terminal.
+The SMB checks run independently of regular SSH outages. A successful check
+shows that Home Assistant can open the share. Each Mac's backup reporter
+shows whether that Mac completed a backup to its configured destination.
+
+## Set up alerts
+
+[![Import the Time Capsule alert blueprint](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fjtenniswood%2Fhass-time-capsule%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Ftime-capsule%2Fmonitoring.yaml)
+
+1. In **Settings → Devices & services → Helpers**, create a **Text** helper
+   with a maximum length of **255**. Give each alert automation its own helper
+   so it can remember active alerts and sector counts across restarts.
+2. Import the [Time Capsule alert blueprint](blueprints/automation/time-capsule/monitoring.yaml).
+   Create an automation from it, select the helper, and choose the sensor
+   inputs you want to use. Select **SSH Connected**, **Backup Volume Mounted**,
+   or the optional SMB sensors under **Connection and mount sensors**.
+3. Keep the default Home Assistant notification or set your own notification
+   action. Use `{{ message }}` in the message field to include the fault or
+   recovery details.
+
+SMART failure and rising sector counts are checked each minute. Connection
+outages, high temperatures, and low space use the configured delays. If you
+enable temperature alerts, set the limit in the sensor's displayed unit and
+use the drive's limits and your normal backup readings as a guide. The
+[original YAML example](examples/monitoring.yaml) is available for existing
+setups. Disable any overlapping alerts when switching to the blueprint.
+
+## Monitor completed Time Machine backups
+
+Set up one webhook and reporter per Mac and backup destination.
+
+1. Copy the [Time Machine package](examples/time_machine_backup.yaml) into your
+   [Home Assistant packages folder](https://www.home-assistant.io/docs/configuration/packages/).
+   Add a long random `time_machine_mac_webhook` value to `secrets.yaml` and
+   restart Home Assistant. For each additional Mac or destination, copy the
+   package and use distinct values for the webhook secret, sensor names,
+   unique IDs, and example automation ID and name. Replace the last-backup
+   and backup-age entity IDs wherever the new package refers to them.
+2. On the Mac, run `tmutil destinationinfo` to identify the intended Time
+   Capsule destination, then check its mounted volume in Finder or with
+   `mount`. Run the [reporter](examples/report-time-machine-backup.sh) in
+   Terminal with Full Disk Access. Use the actual mount path and your Home
+   Assistant address. If `tmutil` requires root, run it with `sudo` from the
+   same Terminal.
+
    ```sh
-   ./report-time-machine-backup.sh "/Volumes/Your Backup Volume" \
+   bash report-time-machine-backup.sh "/Volumes/Your Backup Volume" \
        "https://home-assistant.example/api/webhook/YOUR_WEBHOOK_ID"
    ```
-3. Check that **Mac Last Time Capsule Backup** matches the time shown by Time
-   Machine. Run the reporter when the destination is mounted. The backup age
-   updates in Home Assistant between reports, and the sample alert fires
-   after 48 hours. Each successful report sends only a timestamp to the
-   local webhook.
+
+3. After a successful backup, compare **Mac Last Time Capsule Backup** with
+   Time Machine. Run the same reporter when the volume is unmounted to confirm
+   that **Mac Time Capsule Reporter Status** changes to
+   `destination_unavailable` and the last completed backup stays recorded.
+   A mounted volume that `tmutil` can't read reports `read_error`.
+4. To get alerts, select the Mac's backup age, last report, and reporter status
+   in a blueprint automation. Disable the package's example overdue automation
+   if the blueprint also monitors backup age. Set the report timeout based on
+   how often you run the reporter and how long the Mac normally sleeps. The reporter
+   sends its status and, when readable, the last completed backup timestamp
+   to a local-only webhook.
+
+## Share diagnostics
+
+Open the Time Capsule integration's entry menu and select **Download
+diagnostics** to export the latest check results and decoded measurements.
+The export omits connection and account details. See the
+[hardware sample guide](tests/fixtures/README.md) to help verify an additional
+model, firmware version, or replacement drive.
 
 ## Finding other network devices
 
@@ -124,7 +168,8 @@ can show the status of each Time Capsule.
 
 Each poll opens one SSH connection and runs `envstat` for temperature and fan
 speed, `atactl wd0 smart status` for drive health, and `df /dev/dk2` for disk
-usage. The checks can fail independently. On the first successful SSH
+usage. When disk usage is unreadable, it checks the mount table separately.
+The checks can fail independently. On the first successful SSH
 connection after loading, it also tries `acp -q syNm` to read the base station
 name.
 
