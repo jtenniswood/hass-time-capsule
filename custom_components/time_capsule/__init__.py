@@ -25,6 +25,10 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util.dt import utcnow
 
+from .alert_repairs import (
+    async_clear_retired_alert_repairs,
+    async_watch_retired_alert_sensors,
+)
 from .client import (
     TimeCapsuleAuthError,
     TimeCapsuleConnectionError,
@@ -211,9 +215,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _async_register_device(hass, entry, None)
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    async_watch_retired_alert_sensors(hass, entry)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload this Time Capsule."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clear alert repairs when the Time Capsule is removed."""
+    async_clear_retired_alert_repairs(hass, entry)

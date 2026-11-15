@@ -15,6 +15,7 @@ except ModuleNotFoundError as err:
     raise unittest.SkipTest("Install Home Assistant Core for the monitoring tests") from err
 
 from homeassistant import loader
+from homeassistant.components.persistent_notification import DOMAIN as NOTIFICATION_DOMAIN
 from homeassistant.components.webhook import async_handle_webhook
 from homeassistant.core import HomeAssistant
 from homeassistant.util.aiohttp import MockRequest
@@ -196,3 +197,33 @@ class TestMonitoringExamples(unittest.IsolatedAsyncioTestCase):
         await self.run_alerts()
         self.assertIn("Cleared: Free disk space", self.messages[1])
         self.assertEqual(set(json.loads(self.hass.states.get(HELPER).state)["a"]), {"c", "t"})
+
+    async def test_missing_selected_sensors_show_a_single_configuration_warning(self):
+        await self.start_hass()
+        self.hass.states.async_set(CONNECTION, "on")
+        self.hass.states.async_set(SMART, "Unknown")
+        self.hass.states.async_set(REALLOCATED, "0")
+        self.hass.states.async_set(DISK, "unknown")
+        self.hass.states.async_set(TEMPERATURE, "unavailable")
+        await self.hass.async_start()
+        await self.hass.async_block_till_done()
+        notification_id = f"{AUTOMATION}_missing_sensors"
+        await self.run_alerts()
+        self.assertNotIn(notification_id, self.hass.data.get(NOTIFICATION_DOMAIN, {}))
+
+        self.hass.states.async_remove(CONNECTION)
+        self.hass.states.async_remove(TEMPERATURE)
+        await self.run_alerts()
+        notifications = self.hass.data[NOTIFICATION_DOMAIN]
+        notice = notifications[notification_id]
+        await self.run_alerts()
+        self.assertIs(notifications[notification_id], notice)
+        self.assertIn(CONNECTION, notice["message"])
+        self.assertIn(TEMPERATURE, notice["message"])
+        self.assertNotIn(DISK, notice["message"])
+        self.assertEqual(self.messages, [])
+
+        self.hass.states.async_set(CONNECTION, "on")
+        self.hass.states.async_set(TEMPERATURE, "unavailable")
+        await self.run_alerts()
+        self.assertNotIn(notification_id, notifications)

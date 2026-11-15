@@ -20,10 +20,11 @@ entirely in the Home Assistant UI, and readings refresh every 60 seconds.
 | **Diagnostics → Fan Speed** | Fan speed in RPM. |
 | **Diagnostics → Drive health readings** | Reallocated sectors, pending sectors, offline uncorrectable sectors, reported uncorrectable errors, spin retries, Ultra DMA CRC errors, power cycles, and power-on days. Readings appear when the drive reports them. |
 
-On upgrade, Home Assistant removes retired sensors from the device. If an
-alert used **SSH Connected**, select **Backup Volume Mounted** in the alert
-blueprint. If a temperature alert used a retired sensor, select
-**Temperature** and check that the limit suits the new reading.
+On upgrade, Home Assistant removes retired sensors from the device. Open
+**Settings → System → Repairs** for alerts that still use a retired sensor.
+For **SSH Connected**, select **Backup Volume Mounted** in the alert blueprint.
+For a retired temperature sensor, select **Temperature** and check that the
+limit suits the new reading.
 
 ## Before you install
 
@@ -113,7 +114,9 @@ shows whether that Mac completed a backup to its configured destination.
 2. Import the [Time Capsule alert blueprint](blueprints/automation/time-capsule/monitoring.yaml).
    Create an automation from it, select the helper, and choose the sensor
    inputs you want to use. Select **Backup Volume Mounted** or the optional SMB
-   sensors under **Connection and mount sensors**.
+   sensors under **Connection and mount sensors**. If you already imported this
+   blueprint, re-import it from the same link to get notifications for missing
+   sensor selections.
 3. Keep the default Home Assistant notification or set your own notification
    action. Use `{{ message }}` in the message field to include the fault or
    recovery details.

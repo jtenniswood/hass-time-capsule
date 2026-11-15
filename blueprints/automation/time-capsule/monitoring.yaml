@@ -179,6 +179,19 @@ conditions:
 actions:
   - variables:
       checked_at: "{{ as_timestamp(now()) | int }}"
+      missing_sensors: >
+        {% set selected = connectivity_entities + [smart_entity, pending_entity,
+           reallocated_entity, disk_entity, temperature_entity, backup_entity,
+           report_entity, reporter_entity] %}
+        {% set result = namespace(ids=[]) %}
+        {% if trigger.platform != 'homeassistant' %}
+          {% for entity in selected | reject('eq', '') | unique | sort %}
+            {% if states[entity] is none %}
+              {% set result.ids = result.ids + [entity] %}
+            {% endif %}
+          {% endfor %}
+        {% endif %}
+        {{ result.ids }}
       saved: >
         {% set previous = states(state_helper) | from_json({}) %}
         {{ previous if previous is mapping else {} }}
@@ -217,6 +230,8 @@ actions:
         }}
       counter: "{{ states(reallocated_entity) | int(none) if reallocated_entity else none }}"
   - variables:
+      missing_key: "{{ missing_sensors | join(',') | sha1 if missing_sensors else '' }}"
+  - variables:
       tracked: >
         {% set active = saved.get('a', []) %}
         {% set pending = saved.get('p', {}) %}
@@ -231,8 +246,9 @@ actions:
             {% endif %}
           {% endif %}
         {% endfor %}
-        {{ dict(a=result.active, p=dict(result.pending),
-                r=counter if counter is not none else saved.get('r'), f=saved.get('f', checked_at)) }}
+        {% set state = dict(a=result.active, p=dict(result.pending),
+                           r=counter if counter is not none else saved.get('r'), f=saved.get('f', checked_at)) %}
+        {{ dict(state, x=missing_key) if missing_key else state }}
       sectors_increased: "{{ counter is not none and saved.get('r') is number and counter > saved['r'] }}"
   - variables:
       added: "{{ tracked.a | reject('in', saved.get('a', [])) | list }}"
@@ -244,6 +260,25 @@ actions:
         {% if tracked.a and (added or sectors_increased or recovered) %}
           Active checks: {% for code in tracked.a %}{{ labels[code] }}{% if not loop.last %}; {% endif %}{% endfor %}.
         {% endif %}
+  - if:
+      - condition: template
+        value_template: "{{ saved.get('x', '') != missing_key }}"
+    then:
+      - if:
+          - condition: template
+            value_template: "{{ missing_sensors | count > 0 }}"
+        then:
+          - action: persistent_notification.create
+            data:
+              title: Time Capsule alert needs attention
+              message: >
+                Edit **{{ this.attributes.friendly_name }}** and replace or clear
+                these missing sensors: {{ missing_sensors | join(', ') }}.
+              notification_id: "{{ this.entity_id }}_missing_sensors"
+        else:
+          - action: persistent_notification.dismiss
+            data:
+              notification_id: "{{ this.entity_id }}_missing_sensors"
   - if:
       - condition: template
         value_template: "{{ saved != tracked }}"
