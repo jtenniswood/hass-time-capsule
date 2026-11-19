@@ -5,9 +5,9 @@
   "issue_tracker": "https://github.com/jtenniswood/hass-time-capsule/issues",
   "codeowners": ["@mdevils"],
   "config_flow": true,
-  "iot_class": "local_polling",
   "integration_type": "hub",
+  "iot_class": "local_polling",
   "requirements": ["paramiko>=2.7,<4", "smbprotocol==1.16.1"],
-  "version": "3.0.1",
+  "version": "3.0.2",
   "zeroconf": ["_airport._tcp.local."]
 }
