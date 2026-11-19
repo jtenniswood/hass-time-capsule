@@ -1,12 +1,12 @@
 {
   "domain": "time_capsule",
   "name": "Apple Time Capsule",
-  "documentation": "https://github.com/jtenniswood/hass-time-capsule",
-  "issue_tracker": "https://github.com/jtenniswood/hass-time-capsule/issues",
   "codeowners": ["@mdevils"],
   "config_flow": true,
+  "documentation": "https://github.com/jtenniswood/hass-time-capsule",
   "integration_type": "hub",
   "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/jtenniswood/hass-time-capsule/issues",
   "requirements": ["paramiko>=2.7,<4", "smbprotocol==1.16.1"],
   "version": "3.0.2",
   "zeroconf": ["_airport._tcp.local."]
